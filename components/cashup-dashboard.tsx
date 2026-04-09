@@ -1,6 +1,5 @@
 'use client'
 
-
 import { useMemo, useState } from 'react'
 import {
   AreaChart, Area, BarChart, Bar, LineChart, Line,
