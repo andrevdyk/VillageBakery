@@ -4,21 +4,89 @@ export const maxDuration = 60
 
 const CANONICAL_SELLERS = ['Belinda', 'Linda', 'Book Nook', 'WK Rose', 'Ant V', 'Sarnel', 'Biani', 'Christa', 'Gunter']
 
+// Explicit alias map — checked BEFORE substring matching
+const ALIAS_MAP: Record<string, string> = {
+  // Belinda
+  'belinda d':    'Belinda',
+  'b. creations': 'Belinda',
+  'b.creations':  'Belinda',
+  'bel':          'Belinda',
+  'belinda':      'Belinda',
+  // Linda — must come after Belinda entries
+  'linda m':      'Linda',
+  'linda':        'Linda',
+  'Kaleido':      'Linda',
+  // Book Nook
+  'candi':        'Book Nook',
+  'bk nook':      'Book Nook',
+  'book nook':    'Book Nook',
+  // WK Rose
+  'wk':           'WK Rose',
+  'rose':         'WK Rose',
+  'wk rose':      'WK Rose',
+  // Ant V
+  'av':           'Ant V',
+  'a v':          'Ant V',
+  'ant v':        'Ant V',
+  // Sarnel
+  'sarnel c':     'Sarnel',
+  'sarnel':       'Sarnel',
+  // Biani
+  'biani':        'Biani',
+  // Christa
+  'christa h':    'Christa',
+  'christa':      'Christa',
+  // Gunter
+  'gunter':       'Gunter',
+}
+
+function resolveSellerName(raw: string): string | null {
+  const normalized = raw.trim().toLowerCase()
+  if (!normalized) return null
+
+  // 1. Exact alias match first
+  if (ALIAS_MAP[normalized]) return ALIAS_MAP[normalized]
+
+  // 2. Exact canonical match (case-insensitive)
+  const exact = CANONICAL_SELLERS.find((s) => s.toLowerCase() === normalized)
+  if (exact) return exact
+
+  // 3. Check aliases where the raw input STARTS WITH the alias
+  //    (handles "belinda d" matching "belinda" before "linda")
+  const aliasMatch = Object.entries(ALIAS_MAP).find(([alias]) =>
+    normalized.startsWith(alias) || alias.startsWith(normalized)
+  )
+  if (aliasMatch) return aliasMatch[1]
+
+  // 4. Last resort: canonical substring — but check longer names first
+  //    to prevent "linda" matching inside "belinda"
+  const sorted = [...CANONICAL_SELLERS].sort((a, b) => b.length - a.length)
+  const sub = sorted.find((s) => normalized.includes(s.toLowerCase()))
+  if (sub) return sub
+
+  return null
+}
+
 const PROMPT = `You are an expert at reading handwritten "Curios Sales" sheets from Village Bakery.
 
 The ONLY valid seller names are exactly these 9 (you MUST use one of these, spelled exactly as shown):
 Belinda, Linda, Book Nook, WK Rose, Ant V, Sarnel, Biani, Christa, Gunter
 
+IMPORTANT: "Belinda" and "Linda" are TWO DIFFERENT people. Never confuse them.
+- If the sheet says "Belinda", "Bel", "Belinda D", or "B. Creations" → use "Belinda"
+- If the sheet says "Linda" or "Linda M" → use "Linda"
+- When in doubt between the two, look at the full context of the row
+
 Aliases you will see on sheets — map them as follows:
-- "Belinda D", "B. Creations", "bel", "belinda" → Belinda
-- "Linda M", "linda" → Linda
-- "Candi", "Bk Nook", "book nook" → Book Nook
-- "WK", "Rose", "wk rose" → WK Rose
-- "AV", "A V", "ant v" → Ant V
-- "Sarnel C", "sarnel" → Sarnel
-- "biani" → Biani
-- "Christa h", "christa" → Christa
-- "gunter" → Gunter
+- "Belinda D", "B. Creations", "Bel", "Belinda" → Belinda
+- "Linda M", "Linda", "Kaleido" → Linda
+- "Candi", "Bk Nook", "Book Nook" → Book Nook
+- "WK", "Rose", "WK Rose" → WK Rose
+- "AV", "A V", "Ant V" → Ant V
+- "Sarnel C", "Sarnel" → Sarnel
+- "Biani" → Biani
+- "Christa H", "Christa" → Christa
+- "Gunter" → Gunter
 
 If a name on the sheet does not match any of these 9, pick the closest match.
 
@@ -48,7 +116,7 @@ Rules:
 - amount: numeric value only — no "R", no currency symbols
 - payment_type: "cash" or "card" — default "cash" if not specified
 - commission_pct: always null
-- SKIP any row that is a total, sub-total, running total, or summary (e.g. "Total", "TOTAL", a row with no description that just has a sum)
+- SKIP any row that is a total, sub-total, running total, or summary line
 - raw_text: transcribe all visible text from the image
 - Output ONLY the raw JSON object starting with { and ending with }`
 
@@ -117,18 +185,11 @@ export async function POST(req: NextRequest) {
     try {
       const extracted = JSON.parse(extractJson(content))
 
-      // Server-side fallback: force every entry name to the nearest canonical seller
+      // Server-side fallback: resolve every entry name using the alias map
       if (Array.isArray(extracted.entries)) {
         extracted.entries = extracted.entries.map((entry: { name?: string; [key: string]: unknown }) => {
-          const raw = (entry.name ?? '').trim().toLowerCase()
-          if (!raw) return entry
-          const exact = CANONICAL_SELLERS.find((s) => s.toLowerCase() === raw)
-          if (exact) return { ...entry, name: exact }
-          const sub = CANONICAL_SELLERS.find(
-            (s) => raw.includes(s.toLowerCase()) || s.toLowerCase().includes(raw)
-          )
-          if (sub) return { ...entry, name: sub }
-          return entry
+          const resolved = resolveSellerName(entry.name ?? '')
+          return resolved ? { ...entry, name: resolved } : entry
         })
       }
 
