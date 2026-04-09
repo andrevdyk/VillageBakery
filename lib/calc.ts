@@ -6,17 +6,24 @@ export function calcSheet(sheet: ExtractedCashUpData | CashUpSheet) {
   const totalCash = sheet.total_cash ?? 0
   const totalCashToTakeOut = Math.max(0, totalCash - FLOAT)
   const slipsTotal = (sheet.slips_paid_out ?? []).reduce((s, sl) => s + (sl.amount ?? 0), 0)
-  // Revenue = raw cash + card + accounts (no float deduction — float is a banking step, not a sales figure)
+
+  // Cash received = cash after float + slips paid out
+  const totalCashReceived = totalCashToTakeOut + slipsTotal
+
   const creditCard = sheet.credit_card_yoco ?? 0
   const accounts = sheet.charged_sales_accounts ?? 0
-  const totalActual = totalCash + creditCard + accounts
+
+  // Total actual = cash received + card + accounts
+  const totalActual = totalCashReceived + creditCard + accounts
+
   const tillTotal = sheet.till_total_z_print ?? 0
   const variance = totalActual - tillTotal
+
   return {
     FLOAT,
     totalCashToTakeOut,
     slipsTotal,
-    totalCashReceived: totalCash + slipsTotal,
+    totalCashReceived,
     totalActual,
     variance,
   }
@@ -26,14 +33,12 @@ export function calcCuriosCommissions(
   entries: CurioEntry[],
   sellers: Seller[]
 ): SellerSummary[] {
-  // Build lookup: canonical name (lower) → Seller
   const sellerMap = new Map(sellers.map((s) => [s.name.toLowerCase().trim(), s]))
 
   const grouped = new Map<string, { entries: CurioEntry[]; seller: Seller | null }>()
 
   for (const entry of entries) {
     const raw = (entry.name ?? '').trim()
-    // Try to resolve to a canonical seller
     const canonical = matchSellerName(raw)
     const seller = canonical ? (sellerMap.get(canonical) ?? null) : null
     const key = seller ? seller.name.toLowerCase() : raw.toLowerCase() || 'unknown'

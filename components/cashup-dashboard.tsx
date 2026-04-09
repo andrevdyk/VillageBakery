@@ -74,6 +74,11 @@ function fyEnd  (fy: number): Date { return new Date(fy + 1, 1, 28) }  // 28 Feb
 // ─── Seasonality forecast ─────────────────────────────────────────────────────
 
 function computeForecast(sheets: CashUpSheet[]) {
+  const now = new Date()
+  const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  const daysInCurrentMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
+  const dayOfMonth = now.getDate()
+
   const byMonth = new Map<string, number>()
   for (const s of sheets) {
     const d = parseSheetDate(s.sheet_date, s.created_at)
@@ -81,9 +86,18 @@ function computeForecast(sheets: CashUpSheet[]) {
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
     byMonth.set(key, (byMonth.get(key) ?? 0) + calcSheet(s).totalActual)
   }
+
+  // Project current incomplete month to full month
+  if (byMonth.has(currentMonthKey)) {
+    const partialTotal = byMonth.get(currentMonthKey)!
+    const projected = (partialTotal / dayOfMonth) * daysInCurrentMonth
+    byMonth.set(currentMonthKey, Math.round(projected))
+  }
+
   const sorted = Array.from(byMonth.entries())
     .map(([k, total]) => ({ key: k, total }))
     .sort((a, b) => a.key.localeCompare(b.key))
+
   if (sorted.length < 2) return []
 
   const rates: number[] = []
@@ -93,7 +107,7 @@ function computeForecast(sheets: CashUpSheet[]) {
   }
   const avgGrowth = rates.length ? rates.reduce((a, b) => a + b, 0) / rates.length : 0
 
-  const mean     = sorted.reduce((a, s) => a + s.total, 0) / sorted.length
+  const mean = sorted.reduce((a, s) => a + s.total, 0) / sorted.length
   const seasonal = new Map<number, number>()
   for (const m of sorted) {
     const mo   = parseInt(m.key.split('-')[1]) - 1
@@ -110,9 +124,15 @@ function computeForecast(sheets: CashUpSheet[]) {
 
   return [
     ...sorted.slice(-6).map((m) => {
-      const mo = parseInt(m.key.split('-')[1]) - 1
-      const yr = parseInt(m.key.split('-')[0])
-      return { month: `${MONTHS[mo]} ${yr}`, actual: Math.round(m.total), predicted: null as number | null }
+      const mo        = parseInt(m.key.split('-')[1]) - 1
+      const yr        = parseInt(m.key.split('-')[0])
+      const key       = m.key
+      const isCurrent = key === currentMonthKey
+      return {
+        month:     `${MONTHS[mo]} ${yr}${isCurrent ? ' *' : ''}`,
+        actual:    Math.round(m.total),
+        predicted: null as number | null,
+      }
     }),
     { month: `${MONTHS[nextMo]} ${nextYr}`, actual: null, predicted },
   ]

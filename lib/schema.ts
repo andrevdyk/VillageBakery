@@ -83,6 +83,8 @@ export interface SlipPaidOut {
   amount: number | null
 }
 
+export type ExtractedInvoiceData = ExtractedCashUpData
+
 export interface CashUpSheet {
   id: string
   created_at: string
@@ -97,5 +99,3 @@ export interface CashUpSheet {
   image_url: string | null
   raw_text: string | null
 }
-
-export type ExtractedCashUpData = Omit<CashUpSheet, 'id' | 'created_at'>

@@ -43,7 +43,6 @@ export function InvoiceScanner() {
         body: formData,
       })
 
-      // Guard against HTML error pages (e.g. 500 during compilation)
       const contentType = res.headers.get('content-type') ?? ''
       if (!contentType.includes('application/json')) {
         const text = await res.text()
@@ -96,7 +95,6 @@ export function InvoiceScanner() {
   const handleSave = async (data: ExtractedCashUpData) => {
     setIsSaving(true)
     try {
-      // Upload image to Supabase Storage first
       let storageUrl = data.image_url
       if (capturedFile) {
         const uploaded = await uploadImage(capturedFile)
@@ -230,29 +228,41 @@ export function InvoiceScanner() {
             </button>
           </div>
 
-          {previewUrl && (
-            <div className="rounded-xl overflow-hidden border border-border/60 max-h-40">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={previewUrl} alt="Captured cash up sheet" className="w-full object-cover max-h-40" />
+          {/* Desktop: two-column. Mobile: stacked (image on top) */}
+          <div className="flex flex-col-reverse lg:flex-row lg:items-start gap-6">
+            {/* Left: form */}
+            <div className="flex-1 min-w-0 space-y-4">
+              {extractedData.raw_text && (
+                <button
+                  onClick={() => setShowRawText((v) => !v)}
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  {showRawText ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                  {showRawText ? 'Hide' : 'Show'} full transcription
+                </button>
+              )}
+              {showRawText && extractedData.raw_text && (
+                <div className="bg-muted rounded-lg p-3 text-xs text-muted-foreground font-mono whitespace-pre-wrap max-h-36 overflow-y-auto">
+                  {extractedData.raw_text}
+                </div>
+              )}
+              <CashUpForm data={extractedData} onSave={handleSave} isSaving={isSaving} />
             </div>
-          )}
 
-          {extractedData.raw_text && (
-            <button
-              onClick={() => setShowRawText((v) => !v)}
-              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-            >
-              {showRawText ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-              {showRawText ? 'Hide' : 'Show'} full transcription
-            </button>
-          )}
-          {showRawText && extractedData.raw_text && (
-            <div className="bg-muted rounded-lg p-3 text-xs text-muted-foreground font-mono whitespace-pre-wrap max-h-36 overflow-y-auto">
-              {extractedData.raw_text}
-            </div>
-          )}
-
-          <CashUpForm data={extractedData} onSave={handleSave} isSaving={isSaving} />
+            {/* Right: captured image (sticky on desktop) */}
+            {previewUrl && (
+              <div className="lg:w-80 lg:flex-shrink-0 lg:sticky lg:top-6">
+                <div className="rounded-xl overflow-hidden border border-border/60">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={previewUrl}
+                    alt="Captured cash up sheet"
+                    className="w-full object-contain max-h-48 lg:max-h-[70vh]"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

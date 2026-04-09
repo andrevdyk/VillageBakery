@@ -3,7 +3,8 @@ import { getCuriosSheet, getSellers } from '@/lib/actions/curios'
 import { calcCuriosCommissions } from '@/lib/calc'
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
-import type { Seller } from '@/lib/schema'
+import type { CurioEntry, Seller, SellerSummary } from '@/lib/schema'
+import { ReactElement, JSXElementConstructor, ReactNode, ReactPortal, Key } from 'react'
 
 const R = (v: number | null | undefined) => `R${(Number(v) || 0).toFixed(2)}`
 
@@ -17,12 +18,12 @@ export default async function CuriosDetailPage({ params }: { params: Promise<{ i
   if (!sheet) notFound()
 
   const entries = sheet.entries ?? []
-  const cashTotal = entries.filter((e) => e.payment_type === 'cash').reduce((s, e) => s + (e.amount ?? 0), 0)
-  const cardTotal = entries.filter((e) => e.payment_type === 'card').reduce((s, e) => s + (e.amount ?? 0), 0)
+  const cashTotal = entries.filter((e: CurioEntry) => e.payment_type === 'cash').reduce((s: number, e: CurioEntry) => s + (e.amount ?? 0), 0)
+  const cardTotal = entries.filter((e: CurioEntry) => e.payment_type === 'card').reduce((s: number, e: CurioEntry) => s + (e.amount ?? 0), 0)
   const grandTotal = cashTotal + cardTotal
   const commissions = calcCuriosCommissions(entries, sellers as Seller[])
-  const totalSellerPayout = commissions.reduce((s, c) => s + c.seller_payout, 0)
-  const totalBakeryKeeps = commissions.reduce((s, c) => s + c.bakery_keeps, 0)
+  const totalSellerPayout = commissions.reduce((s: number, c: SellerSummary) => s + c.seller_payout, 0)
+  const totalBakeryKeeps = commissions.reduce((s: number, c: SellerSummary) => s + c.bakery_keeps, 0)
 
   const SectionHead = ({ title }: { title: string }) => (
     <h3 className="font-serif text-xs font-semibold tracking-widest uppercase text-muted-foreground mb-3">
@@ -66,7 +67,7 @@ export default async function CuriosDetailPage({ params }: { params: Promise<{ i
             <p className="text-xs text-muted-foreground text-center py-4">No entries recorded.</p>
           ) : (
             <div className="space-y-1">
-              {entries.map((entry, i) => (
+              {entries.map((entry: { name: any; description: any; payment_type: string | number | bigint | boolean | ReactElement<unknown, string | JSXElementConstructor<any>> | Iterable<ReactNode> | Promise<string | number | bigint | boolean | ReactPortal | ReactElement<unknown, string | JSXElementConstructor<any>> | Iterable<ReactNode> | null | undefined> | null | undefined; amount: any }, i: Key | null | undefined) => (
                 <div key={i} className="flex items-center justify-between py-2 border-b border-border/40 last:border-0 gap-2">
                   <div className="min-w-0">
                     <p className="text-sm font-semibold text-foreground truncate">{entry.name || '—'}</p>

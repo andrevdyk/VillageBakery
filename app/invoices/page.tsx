@@ -61,8 +61,8 @@ export default async function InvoicesPage() {
         {/* Invoice list */}
         {invoices.length > 0 && (
           <div className="space-y-3">
-            {invoices.map((invoice) => (
-              <InvoiceCard key={invoice.id} invoice={invoice} />
+            {invoices.map((sheet) => (
+              <InvoiceCard key={sheet.id} sheet={sheet} />
             ))}
           </div>
         )}
