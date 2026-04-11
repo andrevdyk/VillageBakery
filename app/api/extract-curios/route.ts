@@ -47,25 +47,19 @@ function resolveSellerName(raw: string): string | null {
   const normalized = raw.trim().toLowerCase()
   if (!normalized) return null
 
-  // Hard guards first — these two are the most commonly confused.
-  // "lin..." can NEVER be Belinda. "bel..." can NEVER be Linda.
   if (normalized.startsWith('lin')) return 'Linda'
   if (normalized.startsWith('bel')) return 'Belinda'
 
-  // Exact alias match
   if (ALIAS_MAP[normalized]) return ALIAS_MAP[normalized]
 
-  // Exact canonical match (case-insensitive)
   const exact = CANONICAL_SELLERS.find((s) => s.toLowerCase() === normalized)
   if (exact) return exact
 
-  // Input starts with a known alias
   const aliasMatch = Object.entries(ALIAS_MAP).find(([alias]) =>
     normalized.startsWith(alias) || alias.startsWith(normalized)
   )
   if (aliasMatch) return aliasMatch[1]
 
-  // Canonical substring — longer names first to avoid "linda" matching inside "belinda"
   const sorted = [...CANONICAL_SELLERS].sort((a, b) => b.length - a.length)
   const sub = sorted.find((s) => normalized.includes(s.toLowerCase()))
   if (sub) return sub
@@ -89,7 +83,6 @@ Read each name cell character by character before deciding.
 - Names starting with "Bel" → ALWAYS Belinda, NEVER Linda
 - "Linda", "linda", "Linda M", "LM", "Kaleido", "SFL(Linda)" → Linda
 - "Belinda", "belinda", "Bel", "Belinda D", "B.Creation", "B.Creations" → Belinda
-- "Linda" does NOT start with "Bel". "Belinda" does NOT start with "Lin". Do not confuse them.
 
 STEP 1 — TRANSCRIBE: Read every cell carefully row by row.
   - For crossed-out text, use the replacement not the crossed-out version.
@@ -98,7 +91,17 @@ STEP 1 — TRANSCRIBE: Read every cell carefully row by row.
 
 STEP 2 — INTERPRET: Map name aliases. If a name does NOT match any of the 10 known sellers and is NOT a known alias, record it as-is in "name" AND add it to "unknown_sellers".
 
-STEP 3 — OUTPUT: Return ONLY a valid JSON object.
+STEP 3 — DATE: Extract the sheet date and return it as "sheet_date" in ISO format: yyyy-mm-dd.
+  The year is almost certainly 2026 unless clearly stated otherwise.
+  Examples:
+    "8/4/26"     → "2026-04-08"
+    "28 March"   → "2026-03-28"
+    "14.3.26"    → "2026-03-14"
+    "09/04/2026" → "2026-04-09"
+    "23/3/26"    → "2026-03-23"
+  If no date is visible, return null.
+
+STEP 4 — OUTPUT: Return ONLY a valid JSON object.
 
 Full alias mapping:
 - "ANT", "AV", "AV.", "A V", "Ant", "Ant V" → Ant V
@@ -125,7 +128,7 @@ Payment type:
 Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
 
 {
-  "sheet_date": "string or null",
+  "sheet_date": "yyyy-mm-dd or null",
   "entries": [
     {
       "name": "canonical seller name OR unknown name as written",
@@ -147,6 +150,7 @@ Return ONLY a valid JSON object — no markdown, no explanation, no extra text.
 }
 
 Rules:
+- sheet_date: MUST be yyyy-mm-dd format (e.g. "2026-04-08") or null
 - entries: every individual sale line — do NOT skip rows
 - carried_forward: true only when name was inferred from the row above
 - amount: number only, no R or currency symbols
@@ -197,7 +201,8 @@ export async function POST(req: NextRequest) {
             content:
               'You are a precise data extraction tool. You output only valid JSON. ' +
               'You never confuse "Linda" with "Belinda" — they are different people. ' +
-              'Names starting with "Lin" are always Linda. Names starting with "Bel" are always Belinda.',
+              'Names starting with "Lin" are always Linda. Names starting with "Bel" are always Belinda. ' +
+              'Always return sheet_date in yyyy-mm-dd format (e.g. "2026-04-08"), or null if not visible.',
           },
           {
             role: 'user',

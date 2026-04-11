@@ -1,11 +1,15 @@
 'use client'
 
 import { useState } from 'react'
-import { Plus, Trash2, Save, Loader2, AlertTriangle } from 'lucide-react'
+import { Plus, Trash2, Save, Loader2, AlertTriangle, CalendarIcon } from 'lucide-react'
+import { format, parse, isValid } from 'date-fns'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { Calendar } from '@/components/ui/calendar'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { cn } from '@/lib/utils'
 import { calcCuriosCommissions } from '@/lib/calc'
 import { matchSellerName } from '@/lib/seller-aliases'
 import type { ExtractedCuriosData, CurioEntry, Seller } from '@/lib/schema'
@@ -25,12 +29,28 @@ const toNum = (val: string): number | null => {
 }
 const R = (val: number) => `R${val.toFixed(2)}`
 
+/** Parse a yyyy-mm-dd string into a Date object (local time, no TZ shift) */
+function isoToDate(iso: string | null | undefined): Date | undefined {
+  if (!iso) return undefined
+  const d = parse(iso, 'yyyy-MM-dd', new Date())
+  return isValid(d) ? d : undefined
+}
+
+/** Format a Date to yyyy-mm-dd */
+function dateToIso(d: Date): string {
+  return format(d, 'yyyy-MM-dd')
+}
+
 export function CuriosForm({ data, sellers, onSave, isSaving }: CuriosFormProps) {
   const [form, setForm] = useState<ExtractedCuriosData>(data)
   const [tab, setTab] = useState<Tab>('entries')
+  const [calendarOpen, setCalendarOpen] = useState(false)
 
   const set = <K extends keyof ExtractedCuriosData>(key: K, val: ExtractedCuriosData[K]) =>
     setForm((prev) => ({ ...prev, [key]: val }))
+
+  const selectedDate = isoToDate(form.sheet_date)
+  const dateIsRequired = !form.sheet_date
 
   const updateEntry = (i: number, field: keyof CurioEntry, val: string) => {
     const updated = [...(form.entries ?? [])]
@@ -62,7 +82,6 @@ export function CuriosForm({ data, sellers, onSave, isSaving }: CuriosFormProps)
   const totalBakeryKeeps = commissions.reduce((s, c) => s + c.bakery_keeps, 0)
   const totalSellerPayout = commissions.reduce((s, c) => s + c.seller_payout, 0)
 
-  // Find entries whose name doesn't match any canonical seller
   const unmatchedIndices = entries.reduce<number[]>((acc, e, i) => {
     if (!e.name.trim()) return [...acc, i]
     const matched = matchSellerName(e.name)
@@ -71,7 +90,6 @@ export function CuriosForm({ data, sellers, onSave, isSaving }: CuriosFormProps)
   }, [])
   const hasUnmatched = unmatchedIndices.length > 0
 
-  // Auto-resolve seller name on blur
   const handleNameBlur = (i: number, raw: string) => {
     const matched = matchSellerName(raw)
     if (matched) {
@@ -84,7 +102,6 @@ export function CuriosForm({ data, sellers, onSave, isSaving }: CuriosFormProps)
     }
   }
 
-  // Seller name options
   const sellerNames = sellers.map((s) => s.name)
 
   const SectionHead = ({ title }: { title: string }) => (
@@ -92,6 +109,8 @@ export function CuriosForm({ data, sellers, onSave, isSaving }: CuriosFormProps)
       {title}
     </h3>
   )
+
+  const canSave = !isSaving && !hasUnmatched && !dateIsRequired
 
   return (
     <div className="space-y-4">
@@ -115,15 +134,48 @@ export function CuriosForm({ data, sellers, onSave, isSaving }: CuriosFormProps)
       {/* ─── ENTRIES TAB ─── */}
       {tab === 'entries' && (
         <div className="space-y-4">
-          {/* Date */}
+          {/* Date picker */}
           <section className="bg-card rounded-xl border border-border p-4">
             <SectionHead title="Sheet Date" />
-            <Input
-              value={form.sheet_date ?? ''}
-              onChange={(e) => set('sheet_date', e.target.value || null)}
-              placeholder="31/3/26"
-              className="bg-background border-border"
-            />
+            <div className="space-y-1.5">
+              <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
+                <PopoverTrigger asChild>
+                  <button
+                    className={cn(
+                      'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border text-sm text-left transition-colors',
+                      'bg-background hover:bg-muted/50',
+                      dateIsRequired
+                        ? 'border-destructive/60 ring-1 ring-destructive/30'
+                        : 'border-border',
+                    )}
+                  >
+                    <CalendarIcon size={15} className={dateIsRequired ? 'text-destructive' : 'text-muted-foreground'} />
+                    <span className={selectedDate ? 'text-foreground' : 'text-muted-foreground'}>
+                      {selectedDate
+                        ? format(selectedDate, 'd MMMM yyyy')
+                        : 'Select date — required before saving'}
+                    </span>
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar
+                    mode="single"
+                    selected={selectedDate}
+                    onSelect={(d) => {
+                      set('sheet_date', d ? dateToIso(d) : null)
+                      setCalendarOpen(false)
+                    }}
+                    initialFocus
+                  />
+                </PopoverContent>
+              </Popover>
+              {dateIsRequired && (
+                <p className="text-xs text-destructive flex items-center gap-1.5">
+                  <AlertTriangle size={11} />
+                  A date is required before you can save this sheet.
+                </p>
+              )}
+            </div>
           </section>
 
           {/* Entries */}
@@ -143,7 +195,7 @@ export function CuriosForm({ data, sellers, onSave, isSaving }: CuriosFormProps)
                 No entries yet. Add a row or scan a sheet.
               </p>
             ) : (
-                  <div className="space-y-2">
+              <div className="space-y-2">
                 {entries.map((entry, i) => (
                   <div key={i} className="bg-muted/40 rounded-lg p-3 border border-border/50 space-y-2 relative">
                     <button
@@ -153,7 +205,6 @@ export function CuriosForm({ data, sellers, onSave, isSaving }: CuriosFormProps)
                       <Trash2 size={13} />
                     </button>
 
-                    {/* Desktop: 4-col grid | Mobile: 2-col */}
                     <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 pr-6">
                       <div>
                         <Label className="text-xs text-muted-foreground">Seller Name</Label>
@@ -198,9 +249,8 @@ export function CuriosForm({ data, sellers, onSave, isSaving }: CuriosFormProps)
                             <option key={n} value={n} />
                           ))}
                         </datalist>
-                      </div>{/* end seller col */}
+                      </div>
 
-                      {/* Description — col 2 on desktop */}
                       <div className="lg:col-span-2">
                         <Label className="text-xs text-muted-foreground">Description</Label>
                         <Input
@@ -211,7 +261,6 @@ export function CuriosForm({ data, sellers, onSave, isSaving }: CuriosFormProps)
                         />
                       </div>
 
-                      {/* Amount — col 4 on desktop */}
                       <div>
                         <Label className="text-xs text-muted-foreground">Amount (R)</Label>
                         <Input
@@ -223,9 +272,8 @@ export function CuriosForm({ data, sellers, onSave, isSaving }: CuriosFormProps)
                           className="mt-1 bg-background border-border text-sm text-right"
                         />
                       </div>
-                    </div>{/* end 4-col grid */}
+                    </div>
 
-                    {/* Commission + payment — row below on all sizes */}
                     <div className="grid grid-cols-2 lg:grid-cols-3 gap-2">
                       <div className="lg:col-span-2">
                         <Label className="text-xs text-muted-foreground">
@@ -335,7 +383,6 @@ export function CuriosForm({ data, sellers, onSave, isSaving }: CuriosFormProps)
                     </span>
                   </div>
 
-                  {/* Entry breakdown */}
                   <div className="space-y-1">
                     {c.entries.map((entry, j) => (
                       <div key={j} className="flex items-center justify-between text-xs py-1 border-b border-border/40 last:border-0">
@@ -354,7 +401,6 @@ export function CuriosForm({ data, sellers, onSave, isSaving }: CuriosFormProps)
                     ))}
                   </div>
 
-                  {/* Commission summary */}
                   <div className="space-y-1.5 pt-1 border-t border-border/60">
                     <div className="flex justify-between text-xs">
                       <span className="text-muted-foreground">Total Sales</span>
@@ -372,7 +418,6 @@ export function CuriosForm({ data, sellers, onSave, isSaving }: CuriosFormProps)
                 </section>
               ))}
 
-              {/* Grand summary */}
               <section className="bg-primary/5 rounded-xl border border-primary/20 p-4 space-y-2">
                 <SectionHead title="Summary" />
                 <div className="flex justify-between py-2 px-3 bg-background rounded-lg border border-border">
@@ -406,7 +451,7 @@ export function CuriosForm({ data, sellers, onSave, isSaving }: CuriosFormProps)
       {/* Save */}
       <Button
         onClick={() => onSave(form)}
-        disabled={isSaving || hasUnmatched}
+        disabled={!canSave}
         className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-semibold py-6 text-base rounded-xl gap-2 disabled:opacity-50"
       >
         {isSaving ? (
@@ -417,7 +462,7 @@ export function CuriosForm({ data, sellers, onSave, isSaving }: CuriosFormProps)
         ) : (
           <>
             <Save size={18} />
-            Save Curios Sheet
+            {dateIsRequired ? 'Select a date to save' : 'Save Curios Sheet'}
           </>
         )}
       </Button>

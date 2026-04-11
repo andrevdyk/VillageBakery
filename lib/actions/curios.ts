@@ -2,6 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
+import { normaliseSheetDate } from '@/lib/normalise-date'
 import type { ExtractedCuriosData, Seller, SellerPayment } from '@/lib/schema'
 
 // ─── Sellers ────────────────────────────────────────────────────────────────
@@ -77,12 +78,14 @@ export async function getCuriosSheetByDate(
 export async function saveCuriosSheet(data: ExtractedCuriosData) {
   const supabase = await createClient()
 
+  const normalisedDate = normaliseSheetDate(data.sheet_date)
+
   // Duplicate date guard — reject if a sheet for this date already exists
-  if (data.sheet_date) {
+  if (normalisedDate) {
     const { data: existing, error: lookupError } = await supabase
       .from('curios_sheets')
       .select('id, sheet_date')
-      .eq('sheet_date', data.sheet_date)
+      .eq('sheet_date', normalisedDate)
       .maybeSingle()
     if (lookupError) return { error: lookupError.message }
     if (existing) {
@@ -97,7 +100,7 @@ export async function saveCuriosSheet(data: ExtractedCuriosData) {
   const { data: sheet, error } = await supabase
     .from('curios_sheets')
     .insert({
-      sheet_date: data.sheet_date,
+      sheet_date: normalisedDate,
       entries: data.entries ?? [],
       notes: data.notes,
       image_url: data.image_url ?? null,
@@ -110,12 +113,61 @@ export async function saveCuriosSheet(data: ExtractedCuriosData) {
   return { data: sheet }
 }
 
+export async function updateCuriosSheet(
+  id: string,
+  data: Partial<Pick<ExtractedCuriosData, 'sheet_date' | 'entries' | 'notes' | 'image_url'>>
+) {
+  const supabase = await createClient()
+
+  const updates: Record<string, unknown> = {}
+
+  if ('sheet_date' in data) {
+    const normalisedDate = normaliseSheetDate(data.sheet_date)
+
+    // Duplicate date guard — make sure the new date isn't already taken by another sheet
+    if (normalisedDate) {
+      const { data: existing, error: lookupError } = await supabase
+        .from('curios_sheets')
+        .select('id, sheet_date')
+        .eq('sheet_date', normalisedDate)
+        .neq('id', id) // exclude self
+        .maybeSingle()
+      if (lookupError) return { error: lookupError.message }
+      if (existing) {
+        return {
+          error: 'duplicate_date',
+          existingId: existing.id,
+          existingDate: existing.sheet_date,
+        }
+      }
+    }
+
+    updates.sheet_date = normalisedDate
+  }
+
+  if ('entries' in data) updates.entries = data.entries ?? []
+  if ('notes' in data) updates.notes = data.notes
+  if ('image_url' in data) updates.image_url = data.image_url ?? null
+
+  const { data: sheet, error } = await supabase
+    .from('curios_sheets')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single()
+
+  if (error) return { error: error.message }
+  revalidatePath('/curios')
+  revalidatePath(`/curios/${id}`)
+  return { data: sheet }
+}
+
 export async function getCuriosSheets() {
   const supabase = await createClient()
   const { data, error } = await supabase
     .from('curios_sheets')
     .select('*')
-    .order('created_at', { ascending: false })
+    .order('sheet_date', { ascending: false })
   if (error) return { error: error.message, data: [] }
   return { data: data ?? [] }
 }
@@ -136,9 +188,9 @@ export async function getCuriosSheetsByDateRange(startDate: string, endDate: str
   const { data, error } = await supabase
     .from('curios_sheets')
     .select('*')
-    .gte('created_at', startDate)
-    .lte('created_at', endDate)
-    .order('created_at', { ascending: false })
+    .gte('sheet_date', startDate)
+    .lte('sheet_date', endDate)
+    .order('sheet_date', { ascending: false })
   if (error) return { error: error.message, data: [] }
   return { data: data ?? [] }
 }
