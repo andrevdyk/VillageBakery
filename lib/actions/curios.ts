@@ -61,8 +61,39 @@ export async function deleteSeller(id: string): Promise<{ error?: string }> {
 
 // ─── Curios Sheets ──────────────────────────────────────────────────────────
 
+export async function getCuriosSheetByDate(
+  sheetDate: string
+): Promise<{ data: { id: string; sheet_date: string } | null; error?: string }> {
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from('curios_sheets')
+    .select('id, sheet_date')
+    .eq('sheet_date', sheetDate)
+    .maybeSingle()
+  if (error) return { error: error.message, data: null }
+  return { data: data ?? null }
+}
+
 export async function saveCuriosSheet(data: ExtractedCuriosData) {
   const supabase = await createClient()
+
+  // Duplicate date guard — reject if a sheet for this date already exists
+  if (data.sheet_date) {
+    const { data: existing, error: lookupError } = await supabase
+      .from('curios_sheets')
+      .select('id, sheet_date')
+      .eq('sheet_date', data.sheet_date)
+      .maybeSingle()
+    if (lookupError) return { error: lookupError.message }
+    if (existing) {
+      return {
+        error: 'duplicate_date',
+        existingId: existing.id,
+        existingDate: existing.sheet_date,
+      }
+    }
+  }
+
   const { data: sheet, error } = await supabase
     .from('curios_sheets')
     .insert({

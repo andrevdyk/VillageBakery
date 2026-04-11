@@ -6,11 +6,17 @@ import { Scan, AlertCircle, CheckCircle2, ChevronDown, ChevronUp } from 'lucide-
 import { Button } from '@/components/ui/button'
 import { ImageCapture } from '@/components/image-capture'
 import { CuriosForm } from '@/components/curios-form'
+import { DuplicateDateBanner } from '@/components/duplicate-date-banner'
 import { saveCuriosSheet } from '@/lib/actions/curios'
 import { createClient } from '@/lib/supabase/client'
 import type { ExtractedCuriosData, Seller } from '@/lib/schema'
 
 type Step = 'capture' | 'extracting' | 'review' | 'saved'
+
+interface DuplicateInfo {
+  existingId: string
+  existingDate: string
+}
 
 interface CuriosScannerProps {
   sellers: Seller[]
@@ -25,18 +31,21 @@ export function CuriosScanner({ sellers }: CuriosScannerProps) {
   const [extractError, setExtractError] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
   const [showRawText, setShowRawText] = useState(false)
+  const [duplicate, setDuplicate] = useState<DuplicateInfo | null>(null)
 
   const handleImageCaptured = useCallback((file: File, url: string) => {
     setCapturedFile(file)
     setPreviewUrl(url)
     setExtractedData(null)
     setExtractError(null)
+    setDuplicate(null)
   }, [])
 
   const handleExtract = async () => {
     if (!capturedFile) return
     setStep('extracting')
     setExtractError(null)
+    setDuplicate(null)
 
     try {
       const formData = new FormData()
@@ -79,6 +88,7 @@ export function CuriosScanner({ sellers }: CuriosScannerProps) {
       image_url: previewUrl,
       raw_text: null,
     })
+    setDuplicate(null)
     setStep('review')
   }
 
@@ -105,6 +115,9 @@ export function CuriosScanner({ sellers }: CuriosScannerProps) {
 
   const handleSave = async (data: ExtractedCuriosData) => {
     setIsSaving(true)
+    setDuplicate(null)
+    setExtractError(null)
+
     try {
       // Upload image to Supabase Storage first
       let storageUrl = data.image_url
@@ -114,12 +127,23 @@ export function CuriosScanner({ sellers }: CuriosScannerProps) {
       }
 
       const result = await saveCuriosSheet({ ...data, image_url: storageUrl })
+
+      if (result.error === 'duplicate_date') {
+        // Sheet for this date already exists — show the duplicate banner
+        setDuplicate({
+          existingId: (result as any).existingId,
+          existingDate: (result as any).existingDate,
+        })
+        return
+      }
+
       if (result.error) {
         setExtractError(result.error)
-      } else {
-        setStep('saved')
-        setTimeout(() => router.push('/curios'), 1500)
+        return
       }
+
+      setStep('saved')
+      setTimeout(() => router.push('/curios'), 1500)
     } catch {
       setExtractError('Failed to save curios sheet')
     } finally {
@@ -133,6 +157,7 @@ export function CuriosScanner({ sellers }: CuriosScannerProps) {
     setPreviewUrl(null)
     setExtractedData(null)
     setExtractError(null)
+    setDuplicate(null)
   }
 
   if (step === 'saved') {
@@ -172,7 +197,7 @@ export function CuriosScanner({ sellers }: CuriosScannerProps) {
         ))}
       </div>
 
-      {/* Error */}
+      {/* General error */}
       {extractError && (
         <div className="flex items-start gap-2 bg-destructive/10 border border-destructive/30 rounded-lg p-3">
           <AlertCircle size={16} className="text-destructive mt-0.5 flex-shrink-0" />
@@ -271,6 +296,18 @@ export function CuriosScanner({ sellers }: CuriosScannerProps) {
             <div className="bg-muted rounded-lg p-3 text-xs text-muted-foreground font-mono whitespace-pre-wrap max-h-36 overflow-y-auto">
               {extractedData.raw_text}
             </div>
+          )}
+
+          {/* Duplicate date banner — shown when saveCuriosSheet returns duplicate_date */}
+          {duplicate && (
+            <DuplicateDateBanner
+              existingDate={duplicate.existingDate}
+              existingId={duplicate.existingId}
+              onDateChange={(newDate: string) => {
+                setDuplicate(null)
+                setExtractedData((prev) => prev ? { ...prev, sheet_date: newDate } : prev)
+              }}
+            />
           )}
 
           <CuriosForm
