@@ -7,6 +7,7 @@ export interface CurioEntry {
   payment_type: 'cash' | 'card'
   commission_pct: number | null   // null = use seller default
   seller_id?: string | null
+  carried_forward?: boolean       // true if name was blank/ditto on the sheet
 }
 
 export interface Seller {
@@ -15,6 +16,12 @@ export interface Seller {
   name: string
   display_name: string | null
   commission_pct: number
+}
+
+/** A name the AI saw on the sheet that didn't match any known seller */
+export interface UnknownSeller {
+  raw_name: string        // exactly as the AI read it from the sheet
+  suggested_name: string  // cleaned / title-cased suggestion
 }
 
 export interface CuriosSheet {
@@ -27,7 +34,9 @@ export interface CuriosSheet {
   raw_text: string | null
 }
 
-export type ExtractedCuriosData = Omit<CuriosSheet, 'id' | 'created_at'>
+export type ExtractedCuriosData = Omit<CuriosSheet, 'id' | 'created_at'> & {
+  unknown_sellers?: UnknownSeller[]
+}
 
 export interface SellerSummary {
   seller_name: string
@@ -77,25 +86,4 @@ export interface CashUpSheet {
 
 export type ExtractedCashUpData = Omit<CashUpSheet, 'id' | 'created_at'>
 
-
-export interface SlipPaidOut {
-  description: string
-  amount: number | null
-}
-
 export type ExtractedInvoiceData = ExtractedCashUpData
-
-export interface CashUpSheet {
-  id: string
-  created_at: string
-  sheet_date: string | null
-  total_cash: number | null
-  slips_paid_out: SlipPaidOut[]
-  credit_card_yoco: number | null
-  charged_sales_accounts: number | null
-  till_total_z_print: number | null
-  curios_sales: CurioEntry[]
-  notes: string | null
-  image_url: string | null
-  raw_text: string | null
-}

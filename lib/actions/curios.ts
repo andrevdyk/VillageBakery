@@ -16,6 +16,24 @@ export async function getSellers(): Promise<{ data: Seller[]; error?: string }> 
   return { data: data ?? [] }
 }
 
+export async function createSeller(
+  seller: Pick<Seller, 'name' | 'display_name' | 'commission_pct'>
+): Promise<{ data?: Seller; error?: string }> {
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from('curios_sellers')
+    .insert({
+      name: seller.name,
+      display_name: seller.display_name,
+      commission_pct: seller.commission_pct,
+    })
+    .select()
+    .single()
+  if (error) return { error: error.message }
+  revalidatePath('/curios')
+  return { data: data as Seller }
+}
+
 export async function upsertSeller(
   seller: Omit<Seller, 'id' | 'created_at'> & { id?: string }
 ): Promise<{ error?: string }> {
