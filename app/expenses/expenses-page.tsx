@@ -7,7 +7,9 @@ import {
   AlertCircle, FileSpreadsheet, Loader2, SlidersHorizontal,
   TrendingUp, TrendingDown, ReceiptText, BarChart3, Store,
   Pencil, Trash2, Phone, MapPin, CreditCard, FileText,
+  Users,
 } from 'lucide-react'
+import { EmployeesTab } from './employees-tab'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Cell,
   PieChart, Pie, Tooltip as ReTooltip, ResponsiveContainer,
@@ -1023,7 +1025,7 @@ export default function ExpensesPage() {
   const [loading, setLoading]       = useState(true)
   const [total, setTotal]           = useState(0)
   const [page, setPage]             = useState(1)
-  const [activeTab, setActiveTab]   = useState<'expenses' | 'analysis' | 'vendors'>('expenses')
+  const [activeTab, setActiveTab]   = useState<'expenses' | 'analysis' | 'vendors' | 'employees'>('expenses')
   const [allExpenses, setAllExpenses] = useState<AnalyticsExpense[]>([])
 
   // Vendor modal state
@@ -1255,6 +1257,9 @@ export default function ExpensesPage() {
           <TabsTrigger value="vendors" className="rounded-lg text-xs gap-1.5 px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">
             <Store className="w-3.5 h-3.5" /> Vendors
           </TabsTrigger>
+          <TabsTrigger value="employees" className="rounded-lg text-xs gap-1.5 px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">
+            <Users className="w-3.5 h-3.5" /> Employees
+          </TabsTrigger>
         </TabsList>
 
         {/* ── Expenses tab ── */}
@@ -1352,6 +1357,11 @@ export default function ExpensesPage() {
             onEdit={(s) => { setEditingVendor(s); setVendorModalOpen(true) }}
             onDelete={handleDeleteVendor}
           />
+        </TabsContent>
+
+        {/* ── Employees tab — self-contained component ── */}
+        <TabsContent value="employees" className="mt-5">
+          <EmployeesTab />
         </TabsContent>
       </Tabs>
 
