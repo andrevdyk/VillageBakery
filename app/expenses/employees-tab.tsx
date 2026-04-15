@@ -76,7 +76,7 @@ export interface PayslipData {
   nett_pay: number
   payout: number
   notes: string | null
-  date_paid: string | null
+  date_paid?: string | null
   vb_employee?: {
     full_name: string
     job_position: string | null
@@ -770,7 +770,15 @@ function GeneratePayslipModal({
     setError(''); setSaving(true)
     const built = buildPayslip()
     const existingId = initialData?.payslip_id
-    const saved = await onSave(built, existingId)
+    let saved: PayslipData
+    try {
+      saved = await onSave(built, existingId)
+    } catch (err) {
+      console.error('Save payslip failed:', err)
+      setError('Failed to save payslip. Check the browser console for details.')
+      setSaving(false)
+      return
+    }
     setSaving(false)
     setPreview({
       ...built,
@@ -1385,15 +1393,44 @@ export function EmployeesTab() {
   }
 
   async function handleSavePayslip(data: Omit<PayslipData, 'payslip_id'>, existingId?: number): Promise<PayslipData> {
+    // Strip display-only fields that are not DB columns, then sanitise all numerics
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { vb_employee: _vb, date_paid: _dp, ...rest } = data as PayslipData
+
+    const dbRow = {
+      ...rest,
+      extra_earnings:       JSON.parse(JSON.stringify(rest.extra_earnings ?? [])),
+      flat_amount:          Number(rest.flat_amount          ?? 0),
+      rate:                 Number(rest.rate                 ?? 0),
+      regular_hours:        Number(rest.regular_hours        ?? 0),
+      regular_days:         Number(rest.regular_days         ?? 0),
+      overtime_hours:       Number(rest.overtime_hours       ?? 0),
+      public_holiday_hours: Number(rest.public_holiday_hours ?? 0),
+      public_holiday_days:  Number(rest.public_holiday_days  ?? 0),
+      leave_days:           Number(rest.leave_days           ?? 0),
+      bonus:                Number(rest.bonus                ?? 0),
+      other_deductions:     Number(rest.other_deductions     ?? 0),
+      regular_pay:          Number(rest.regular_pay          ?? 0),
+      overtime_pay:         Number(rest.overtime_pay         ?? 0),
+      public_holiday_pay:   Number(rest.public_holiday_pay   ?? 0),
+      leave_pay:            Number(rest.leave_pay            ?? 0),
+      total_earnings:       Number(rest.total_earnings       ?? 0),
+      uif_employee:         Number(rest.uif_employee         ?? 0),
+      total_deductions:     Number(rest.total_deductions     ?? 0),
+      nett_pay:             Number(rest.nett_pay             ?? 0),
+      payout:               Number(rest.payout               ?? 0),
+    }
+
     if (existingId) {
-      // Update existing payslip
-      await supabase.from('vb_payslip').update(data).eq('payslip_id', existingId)
-      // Refresh history list
+      const { error } = await supabase.from('vb_payslip').update(dbRow).eq('payslip_id', existingId)
+      if (error) console.error('Payslip update error:', error)
       if (historyEmployee) await handleViewHistory(historyEmployee)
       return { ...data, payslip_id: existingId }
     }
-    const { data: saved } = await supabase.from('vb_payslip').insert([data]).select().single()
-    return saved as PayslipData
+
+    const { data: saved, error } = await supabase.from('vb_payslip').insert([dbRow]).select().single()
+    if (error) console.error('Payslip insert error:', error)
+    return (saved ?? data) as PayslipData
   }
 
   async function handleViewHistory(emp: Employee) {
