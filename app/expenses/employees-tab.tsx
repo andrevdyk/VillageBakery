@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import {
   Users, Plus, Pencil, Trash2, Phone, CreditCard, AlertCircle,
   Loader2, Check, Printer, FileText, Clock, Calendar, X, Eye, BanknoteIcon,
+  TrendingUp, CalendarClock, Wallet,
 } from 'lucide-react'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -1353,11 +1354,120 @@ function PayslipHistorySheet({
   )
 }
 
+
+// ─── Payroll Stats Cards ─────────────────────────────────────────────────────
+function PayrollStats({ payslips, employees }: { payslips: PayslipData[]; employees: Employee[] }) {
+  const now   = new Date()
+  const ZAR   = (n: number) => new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(n)
+
+  // ── Last 7 days: paid payslips where date_paid is within last 7 days ──────
+  const last7Start = new Date(now)
+  last7Start.setDate(now.getDate() - 7)
+  const paidLast7 = payslips
+    .filter(p => p.date_paid && new Date(p.date_paid) >= last7Start)
+    .reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
+
+  // ── This calendar month: paid payslips with date_paid in current month ────
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+  const monthEnd   = new Date(now.getFullYear(), now.getMonth() + 1, 0)
+  const paidThisMonth = payslips
+    .filter(p => {
+      if (!p.date_paid) return false
+      const d = new Date(p.date_paid)
+      return d >= monthStart && d <= monthEnd
+    })
+    .reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
+
+  // ── Expected this month: sum of active employees expected pay ─────────────
+  // For flat employees: flat_rate
+  // For daily: daily_rate × estimated business days remaining in month
+  // For hourly: hourly_rate × 8h × estimated business days remaining in month
+  function businessDaysInMonth(year: number, month: number): number {
+    let count = 0
+    const d = new Date(year, month, 1)
+    while (d.getMonth() === month) {
+      const day = d.getDay()
+      if (day !== 0 && day !== 6) count++
+      d.setDate(d.getDate() + 1)
+    }
+    return count
+  }
+  const totalBDays = businessDaysInMonth(now.getFullYear(), now.getMonth())
+
+  const expectedThisMonth = employees
+    .filter(e => e.is_active)
+    .reduce((s, e) => {
+      if (e.pay_type === 'flat')   return s + Number(e.flat_rate   ?? 0)
+      if (e.pay_type === 'daily')  return s + Number(e.daily_rate  ?? 0) * totalBDays
+      if (e.pay_type === 'hourly') return s + Number(e.hourly_rate ?? 0) * 8 * totalBDays
+      return s
+    }, 0)
+  // Rough nett (deduct 1% UIF estimate)
+  const expectedNett = expectedThisMonth * 0.99
+
+  // ── Outstanding: unpaid payslips with period_to in current month ──────────
+  const outstanding = payslips
+    .filter(p => {
+      if (p.date_paid) return false
+      const to = new Date(p.period_to)
+      return to >= monthStart && to <= monthEnd
+    })
+    .reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
+
+  const cards = [
+    {
+      label: 'Paid last 7 days',
+      value: ZAR(paidLast7),
+      sub: `${payslips.filter(p => p.date_paid && new Date(p.date_paid) >= last7Start).length} payslips`,
+      color: '#7A9E7E',  // sage
+      icon: <Wallet className="w-4 h-4" />,
+    },
+    {
+      label: 'Paid this month',
+      value: ZAR(paidThisMonth),
+      sub: new Date(now.getFullYear(), now.getMonth(), 1).toLocaleString('en-ZA', { month: 'long', year: 'numeric' }),
+      color: '#C4874A',  // caramel
+      icon: <TrendingUp className="w-4 h-4" />,
+    },
+    {
+      label: 'Expected this month',
+      value: ZAR(Math.round(expectedNett)),
+      sub: `${employees.filter(e => e.is_active).length} active employees · est. nett`,
+      color: '#5C3D2E',  // coffee
+      icon: <CalendarClock className="w-4 h-4" />,
+    },
+    {
+      label: 'Outstanding (unpaid)',
+      value: ZAR(outstanding),
+      sub: `${payslips.filter(p => !p.date_paid && new Date(p.period_to) >= monthStart && new Date(p.period_to) <= monthEnd).length} unpaid this month`,
+      color: '#C0614A',  // terracotta
+      icon: <BanknoteIcon className="w-4 h-4" />,
+    },
+  ]
+
+  return (
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+      {cards.map(({ label, value, sub, color, icon }) => (
+        <div key={label} className="rounded-xl bg-card border p-4 relative overflow-hidden">
+          <div className="absolute top-0 left-0 right-0 h-1 rounded-t-xl" style={{ background: color }} />
+          <div className="flex items-center justify-between mb-2 mt-1">
+            <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold">{label}</p>
+            <span className="text-muted-foreground opacity-50">{icon}</span>
+          </div>
+          <p className="text-base sm:text-lg font-semibold tabular-nums leading-tight">{value}</p>
+          <p className="text-[10px] text-muted-foreground mt-1 truncate">{sub}</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // ─── Employees Tab ──────────────────────────────────────────────────────────
 export function EmployeesTab() {
   const supabase = createClient()
 
   const [employees, setEmployees]               = useState<Employee[]>([])
+  const [allPayslips, setAllPayslips]           = useState<PayslipData[]>([])
   const [employeeModalOpen, setEmployeeModalOpen] = useState(false)
   const [editingEmployee, setEditingEmployee]   = useState<Employee | null>(null)
   const [payslipEmployee, setPayslipEmployee]   = useState<Employee | null>(null)
@@ -1373,7 +1483,28 @@ export function EmployeesTab() {
     setEmployees((data as Employee[]) ?? [])
   }, [])
 
-  useEffect(() => { fetchEmployees() }, [fetchEmployees])
+  const fetchAllPayslips = useCallback(async () => {
+    const { data } = await supabase
+      .from('vb_payslip')
+      .select('payslip_id, employee_id, period_from, period_to, pay_date, nett_pay, payout, date_paid, payslip_type, pay_type, flat_amount, rate, total_earnings')
+      .order('period_from', { ascending: false })
+    setAllPayslips((data as PayslipData[]) ?? [])
+  }, [])
+
+  useEffect(() => { fetchEmployees(); fetchAllPayslips() }, [fetchEmployees, fetchAllPayslips])
+
+  // Build a map of employee_id → most recent date_paid (for Last Paid column)
+  const lastPaidMap = useMemo(() => {
+    const map = new Map<number, string>()
+    for (const p of allPayslips) {
+      if (!p.date_paid) continue
+      const existing = map.get(p.employee_id)
+      if (!existing || p.date_paid > existing) {
+        map.set(p.employee_id, p.date_paid)
+      }
+    }
+    return map
+  }, [allPayslips])
 
   const filtered = employees.filter(e =>
     (showInactive || e.is_active) &&
@@ -1384,6 +1515,11 @@ export function EmployeesTab() {
     if (id) await supabase.from('vb_employee').update(data).eq('employee_id', id)
     else    await supabase.from('vb_employee').insert([data])
     await fetchEmployees()
+  }
+
+  // Refresh all payslips after any payslip mutation
+  async function refreshPayslips() {
+    await fetchAllPayslips()
   }
 
   async function handleDeleteEmployee(id: number) {
@@ -1430,6 +1566,7 @@ export function EmployeesTab() {
 
     const { data: saved, error } = await supabase.from('vb_payslip').insert([dbRow]).select().single()
     if (error) console.error('Payslip insert error:', error)
+    await refreshPayslips()
     return (saved ?? data) as PayslipData
   }
 
@@ -1448,13 +1585,14 @@ export function EmployeesTab() {
 
   async function handleDeletePayslip(id: number) {
     await supabase.from('vb_payslip').delete().eq('payslip_id', id)
-    // Refresh the payslip list for the currently open history sheet
     if (historyEmployee) await handleViewHistory(historyEmployee)
+    await refreshPayslips()
   }
 
   async function handleMarkPayslipPaid(id: number, datePaid: string) {
     await supabase.from('vb_payslip').update({ date_paid: datePaid }).eq('payslip_id', id)
     if (historyEmployee) await handleViewHistory(historyEmployee)
+    await refreshPayslips()
   }
 
   function handleEditPayslip(p: PayslipData) {
@@ -1467,6 +1605,9 @@ export function EmployeesTab() {
 
   return (
     <div className="space-y-4">
+      {/* ── Payroll summary cards ── */}
+      <PayrollStats payslips={allPayslips} employees={employees} />
+
       {/* Search + controls */}
       <div className="flex items-center gap-2 flex-wrap">
         <Input
@@ -1510,7 +1651,7 @@ export function EmployeesTab() {
                   <TableHead>Position</TableHead>
                   <TableHead>Pay type</TableHead>
                   <TableHead>Rate</TableHead>
-                  <TableHead>Phone</TableHead>
+                  <TableHead>Last paid</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="w-44" />
                 </TableRow>
@@ -1532,7 +1673,15 @@ export function EmployeesTab() {
                       {e.pay_type === 'flat'   && e.flat_rate   ? `R${e.flat_rate}/mo` : ''}
                       {!e.hourly_rate && !e.daily_rate && !e.flat_rate ? '—' : ''}
                     </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">{e.phone_number ?? '—'}</TableCell>
+                    <TableCell className="text-sm tabular-nums">
+                      {lastPaidMap.has(e.employee_id) ? (
+                        <span className="text-green-600 font-medium text-xs">
+                          {new Date(lastPaidMap.get(e.employee_id)!).toLocaleDateString('en-ZA')}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground text-xs">Never</span>
+                      )}
+                    </TableCell>
                     <TableCell>
                       <Badge variant={e.is_active ? 'secondary' : 'outline'} className="text-xs">
                         {e.is_active ? 'Active' : 'Inactive'}
@@ -1580,6 +1729,12 @@ export function EmployeesTab() {
                   {e.phone_number          && <div className="flex items-center gap-1.5"><Phone     className="w-3 h-3" />{e.phone_number}</div>}
                   {e.bank_account_number   && <div className="flex items-center gap-1.5"><CreditCard className="w-3 h-3" />{e.bank_account_number}</div>}
                   {e.emergency_contact     && <div className="col-span-2 flex items-center gap-1.5"><AlertCircle className="w-3 h-3" />{e.emergency_contact}</div>}
+                  <div className="flex items-center gap-1.5">
+                    <BanknoteIcon className="w-3 h-3" />
+                    {lastPaidMap.has(e.employee_id)
+                      ? <span className="text-green-600">{new Date(lastPaidMap.get(e.employee_id)!).toLocaleDateString('en-ZA')}</span>
+                      : 'Never paid'}
+                  </div>
                 </div>
                 <div className="flex gap-2 pt-1 border-t">
                   <Button variant="outline" size="sm" className="flex-1 h-8 text-xs gap-1" onClick={() => handleViewHistory(e)}>
