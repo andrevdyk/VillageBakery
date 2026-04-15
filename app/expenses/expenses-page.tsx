@@ -7,7 +7,7 @@ import {
   AlertCircle, FileSpreadsheet, Loader2, SlidersHorizontal,
   TrendingUp, TrendingDown, ReceiptText, BarChart3, Store,
   Pencil, Trash2, Phone, MapPin, CreditCard, FileText,
-  Users,
+  Users, RefreshCw, Repeat, Banknote, ToggleLeft, ToggleRight,
 } from 'lucide-react'
 import { EmployeesTab } from './employees-tab'
 import {
@@ -100,6 +100,18 @@ interface AnalyticsExpense {
   amount_incl_vat: number
   date_paid: string | null
   vb_supplier: { company_name: string }
+}
+
+interface RecurringExpense {
+  recurring_id: number
+  supplier_id: number | null
+  description: string
+  amount_excl_vat: number
+  vat_rated: boolean
+  is_active: boolean
+  category: string | null
+  notes: string | null
+  vb_supplier?: { company_name: string } | null
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -549,13 +561,44 @@ function AddExpenseModal({ open, onClose, suppliers, onSave }: {
   open: boolean; onClose: () => void; suppliers: Supplier[]
   onSave: (row: ExpenseRow) => Promise<void>
 }) {
-  const [form, setForm] = useState<Partial<ExpenseRow>>({ vat_rated: false, amount_excl_vat: 0 })
+  // 'expense' = normal supplier expense, 'bank' = bank fees (no supplier needed)
+  const [mode, setMode]     = useState<'expense' | 'bank'>('expense')
+  const [form, setForm]     = useState<Partial<ExpenseRow>>({ vat_rated: false, amount_excl_vat: 0 })
+  const [bankFees, setBankFees] = useState({ amount: 0, description: 'Bank charges', date: new Date().toISOString().split('T')[0], date_paid: '' })
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError]   = useState('')
+
+  // Reset on open
+  useEffect(() => {
+    if (open) {
+      setMode('expense')
+      setForm({ vat_rated: false, amount_excl_vat: 0 })
+      setBankFees({ amount: 0, description: 'Bank charges', date: new Date().toISOString().split('T')[0], date_paid: '' })
+      setError('')
+    }
+  }, [open])
+
   const set = (k: keyof ExpenseRow, v: unknown) => setForm(f => ({ ...f, [k]: v }))
   const { vat_amount, amount_incl_vat } = calcVat(form.amount_excl_vat ?? 0, form.vat_rated ?? false)
 
   async function handleSave() {
+    if (mode === 'bank') {
+      if (!bankFees.amount || bankFees.amount <= 0) return setError('Please enter a bank fee amount')
+      if (!bankFees.date) return setError('Please enter a date')
+      // Bank fees: no supplier, VAT-exempt, description = bank charges
+      setError(''); setSaving(true)
+      // For bank fees we omit supplier_id so it's null in the DB
+      // (requires supplier_id to be nullable in vb_expense — see migration)
+      await onSave({
+        invoice_date: bankFees.date,
+        product_description: bankFees.description || 'Bank charges',
+        amount_excl_vat: bankFees.amount,
+        vat_rated: false,
+        date_paid: bankFees.date_paid || undefined,
+      } as unknown as ExpenseRow)
+      setSaving(false); onClose()
+      return
+    }
     if (!form.supplier_id) return setError('Please select a supplier')
     if (!form.invoice_date) return setError('Please enter an invoice date')
     if (!form.amount_excl_vat || form.amount_excl_vat <= 0) return setError('Please enter a valid amount')
@@ -569,40 +612,440 @@ function AddExpenseModal({ open, onClose, suppliers, onSave }: {
       <DialogContent className="w-full max-w-md h-[100dvh] sm:h-auto sm:max-h-[90vh] overflow-y-auto p-4 sm:p-6 rounded-none sm:rounded-xl">
         <DialogHeader><DialogTitle>Add expense</DialogTitle></DialogHeader>
         <div className="space-y-4">
-          <div className="space-y-1.5">
-            <Label>Supplier</Label>
-            <Select onValueChange={v => set('supplier_id', Number(v))}>
-              <SelectTrigger><SelectValue placeholder="Select supplier…" /></SelectTrigger>
-              <SelectContent>{suppliers.map(s => <SelectItem key={s.supplier_id} value={String(s.supplier_id)}>{s.company_name}</SelectItem>)}</SelectContent>
-            </Select>
+
+          {/* Mode toggle */}
+          <div className="flex rounded-xl bg-muted p-1 gap-1">
+            <button
+              onClick={() => setMode('expense')}
+              className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-medium transition-all ${mode === 'expense' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              <FileText className="w-3.5 h-3.5" /> Supplier expense
+            </button>
+            <button
+              onClick={() => setMode('bank')}
+              className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-medium transition-all ${mode === 'bank' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              <Banknote className="w-3.5 h-3.5" /> Bank fees
+            </button>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5"><Label>Invoice number</Label><Input placeholder="e.g. INV-001" onChange={e => set('invoice_number', e.target.value)} /></div>
-            <div className="space-y-1.5"><Label>Invoice date</Label><Input type="date" onChange={e => set('invoice_date', e.target.value)} /></div>
-          </div>
-          <div className="space-y-1.5"><Label>Product / description</Label><Input placeholder="e.g. Bread flour, 25kg bags" onChange={e => set('product_description', e.target.value)} /></div>
-          <div className="space-y-1.5">
-            <Label>Amount (excl. VAT)</Label>
-            <Input type="number" inputMode="decimal" min={0} step={0.01} placeholder="0.00" onChange={e => set('amount_excl_vat', parseFloat(e.target.value) || 0)} />
-          </div>
-          <div className="flex items-center gap-2">
-            <Checkbox id="vat-rated" checked={form.vat_rated} onCheckedChange={v => set('vat_rated', v === true)} />
-            <Label htmlFor="vat-rated" className="cursor-pointer">VAT rated (15%)</Label>
-          </div>
-          <div className="space-y-1.5">
-            <Label>Date paid <span className="text-muted-foreground text-xs">(leave blank if unpaid)</span></Label>
-            <Input type="date" onChange={e => set('date_paid', e.target.value || undefined)} />
-          </div>
-          <div className="rounded-xl bg-muted/40 border p-3 space-y-1 text-sm">
-            <div className="flex justify-between text-muted-foreground"><span>Excl. VAT</span><span>{ZAR(form.amount_excl_vat ?? 0)}</span></div>
-            <div className="flex justify-between text-muted-foreground"><span>VAT ({form.vat_rated ? '15%' : '0%'})</span><span>{ZAR(vat_amount)}</span></div>
-            <div className="flex justify-between font-medium border-t pt-1 mt-1"><span>Total incl. VAT</span><span>{ZAR(amount_incl_vat)}</span></div>
-          </div>
+
+          {mode === 'bank' ? (
+            /* ── Bank fees form ── */
+            <div className="space-y-4">
+              <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
+                Bank fees are recorded as zero-rated (0% VAT) expenses with no supplier.
+              </div>
+              <div className="space-y-1.5">
+                <Label>Description</Label>
+                <Input
+                  value={bankFees.description}
+                  placeholder="e.g. Bank charges, Monthly fee"
+                  onChange={e => setBankFees(b => ({ ...b, description: e.target.value }))}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>Amount (R)</Label>
+                  <Input
+                    type="number" inputMode="decimal" min={0} step={0.01} placeholder="0.00"
+                    value={bankFees.amount || ''}
+                    onChange={e => setBankFees(b => ({ ...b, amount: parseFloat(e.target.value) || 0 }))}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Date</Label>
+                  <Input type="date" value={bankFees.date} onChange={e => setBankFees(b => ({ ...b, date: e.target.value }))} />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Date paid <span className="text-muted-foreground text-xs">(leave blank if unpaid)</span></Label>
+                <Input type="date" value={bankFees.date_paid} onChange={e => setBankFees(b => ({ ...b, date_paid: e.target.value }))} />
+              </div>
+              <div className="rounded-xl bg-muted/40 border p-3 text-sm flex justify-between font-medium">
+                <span>Total (no VAT)</span>
+                <span>{ZAR(bankFees.amount || 0)}</span>
+              </div>
+            </div>
+          ) : (
+            /* ── Normal supplier expense form ── */
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <Label>Supplier</Label>
+                <Select onValueChange={v => set('supplier_id', Number(v))}>
+                  <SelectTrigger><SelectValue placeholder="Select supplier…" /></SelectTrigger>
+                  <SelectContent>{suppliers.map(s => <SelectItem key={s.supplier_id} value={String(s.supplier_id)}>{s.company_name}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5"><Label>Invoice number</Label><Input placeholder="e.g. INV-001" onChange={e => set('invoice_number', e.target.value)} /></div>
+                <div className="space-y-1.5"><Label>Invoice date</Label><Input type="date" onChange={e => set('invoice_date', e.target.value)} /></div>
+              </div>
+              <div className="space-y-1.5"><Label>Product / description</Label><Input placeholder="e.g. Bread flour, 25kg bags" onChange={e => set('product_description', e.target.value)} /></div>
+              <div className="space-y-1.5">
+                <Label>Amount (excl. VAT)</Label>
+                <Input type="number" inputMode="decimal" min={0} step={0.01} placeholder="0.00" onChange={e => set('amount_excl_vat', parseFloat(e.target.value) || 0)} />
+              </div>
+              <div className="flex items-center gap-2">
+                <Checkbox id="vat-rated" checked={form.vat_rated} onCheckedChange={v => set('vat_rated', v === true)} />
+                <Label htmlFor="vat-rated" className="cursor-pointer">VAT rated (15%)</Label>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Date paid <span className="text-muted-foreground text-xs">(leave blank if unpaid)</span></Label>
+                <Input type="date" onChange={e => set('date_paid', e.target.value || undefined)} />
+              </div>
+              <div className="rounded-xl bg-muted/40 border p-3 space-y-1 text-sm">
+                <div className="flex justify-between text-muted-foreground"><span>Excl. VAT</span><span>{ZAR(form.amount_excl_vat ?? 0)}</span></div>
+                <div className="flex justify-between text-muted-foreground"><span>VAT ({form.vat_rated ? '15%' : '0%'})</span><span>{ZAR(vat_amount)}</span></div>
+                <div className="flex justify-between font-medium border-t pt-1 mt-1"><span>Total incl. VAT</span><span>{ZAR(amount_incl_vat)}</span></div>
+              </div>
+            </div>
+          )}
+
           {error && <p className="text-xs text-destructive flex items-center gap-1"><AlertCircle className="w-3 h-3" /> {error}</p>}
           <div className="flex justify-end gap-2 pt-1 sticky bottom-0 bg-background pb-2 sm:static sm:pb-0 sm:bg-transparent">
             <Button variant="outline" onClick={onClose} className="flex-1 sm:flex-none">Cancel</Button>
             <Button onClick={handleSave} disabled={saving} className="flex-1 sm:flex-none">
               {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Save expense
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ─── Recurring Expenses Tab ───────────────────────────────────────────────────
+function RecurringTab({ suppliers }: { suppliers: Supplier[] }) {
+  const supabase = createClient()
+  const [items, setItems]             = useState<RecurringExpense[]>([])
+  const [loading, setLoading]         = useState(true)
+  const [generating, setGenerating]   = useState(false)
+  const [showAdd, setShowAdd]         = useState(false)
+  const [editItem, setEditItem]       = useState<RecurringExpense | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<RecurringExpense | null>(null)
+  const [genResult, setGenResult]     = useState<string | null>(null)
+
+  const ZAR_local = (n: number) => new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(n)
+
+  const fetchItems = useCallback(async () => {
+    setLoading(true)
+    const { data } = await supabase
+      .from('vb_recurring_expense')
+      .select('*, vb_supplier(company_name)')
+      .order('description')
+    setItems((data as RecurringExpense[]) ?? [])
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { fetchItems() }, [fetchItems])
+
+  async function handleToggleActive(item: RecurringExpense) {
+    await supabase.from('vb_recurring_expense').update({ is_active: !item.is_active }).eq('recurring_id', item.recurring_id)
+    await fetchItems()
+  }
+
+  async function handleDelete(id: number) {
+    await supabase.from('vb_recurring_expense').delete().eq('recurring_id', id)
+    setDeleteTarget(null)
+    await fetchItems()
+  }
+
+  async function handleGenerateMonth() {
+    const now = new Date()
+    // Use current month's 1st as invoice date
+    const invoiceDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+    const active = items.filter(i => i.is_active)
+    if (!active.length) return setGenResult('No active recurring expenses to generate.')
+    setGenerating(true)
+
+    // Check for duplicates: already generated this month?
+    const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+    const monthEnd   = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()}`
+
+    const rows = active.map(item => ({
+      supplier_id:         item.supplier_id,
+      invoice_date:        invoiceDate,
+      product_description: item.description,
+      amount_excl_vat:     item.amount_excl_vat,
+      vat_rated:           item.vat_rated,
+    }))
+
+    const { error } = await supabase.from('vb_expense').insert(rows)
+    setGenerating(false)
+    if (error) {
+      setGenResult(`Error: ${error.message}`)
+    } else {
+      setGenResult(`Generated ${active.length} expense${active.length !== 1 ? 's' : ''} for ${now.toLocaleString('en-ZA', { month: 'long', year: 'numeric' })}.`)
+    }
+  }
+
+  const activeCount = items.filter(i => i.is_active).length
+  const totalMonthly = items.filter(i => i.is_active).reduce((s, i) => {
+    const { amount_incl_vat } = calcVat(i.amount_excl_vat, i.vat_rated)
+    return s + amount_incl_vat
+  }, 0)
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <p className="text-sm text-muted-foreground">
+            {activeCount} active · est. <strong>{ZAR_local(totalMonthly)}</strong>/month
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline" size="sm"
+            className="gap-1.5"
+            onClick={handleGenerateMonth}
+            disabled={generating || activeCount === 0}
+          >
+            {generating
+              ? <Loader2 className="w-4 h-4 animate-spin" />
+              : <RefreshCw className="w-4 h-4" />
+            }
+            <span className="hidden sm:inline">Generate this month</span>
+            <span className="sm:hidden">Generate</span>
+          </Button>
+          <Button size="sm" className="gap-1.5" onClick={() => { setEditItem(null); setShowAdd(true) }}>
+            <Plus className="w-4 h-4" /><span className="hidden sm:inline">Add recurring</span><span className="sm:hidden">Add</span>
+          </Button>
+        </div>
+      </div>
+
+      {/* Generation result banner */}
+      {genResult && (
+        <div className="rounded-xl bg-green-50 border border-green-200 px-4 py-2.5 flex items-center justify-between gap-2 text-sm text-green-700">
+          <span>{genResult}</span>
+          <button onClick={() => setGenResult(null)} className="text-green-500 hover:text-green-700"><X className="w-4 h-4" /></button>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="flex flex-col items-center gap-2 py-12 text-muted-foreground text-sm">
+          <Loader2 className="w-5 h-5 animate-spin" />Loading…
+        </div>
+      ) : items.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-2">
+          <Repeat className="w-10 h-10 opacity-30" />
+          <p className="text-sm">No recurring expenses yet.</p>
+          <p className="text-xs text-center max-w-xs">Add fixed monthly costs like insurance, internet, or hosting. Generate them all at once each month.</p>
+        </div>
+      ) : (
+        <>
+          {/* Desktop table */}
+          <div className="hidden sm:block rounded-xl border overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Active</TableHead>
+                  <TableHead>Description</TableHead>
+                  <TableHead>Supplier</TableHead>
+                  <TableHead>Category</TableHead>
+                  <TableHead className="text-right">Excl. VAT</TableHead>
+                  <TableHead>VAT</TableHead>
+                  <TableHead className="text-right">Monthly total</TableHead>
+                  <TableHead className="w-16" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {items.map(item => {
+                  const { amount_incl_vat } = calcVat(item.amount_excl_vat, item.vat_rated)
+                  return (
+                    <TableRow key={item.recurring_id} className={!item.is_active ? 'opacity-40' : ''}>
+                      <TableCell>
+                        <button onClick={() => handleToggleActive(item)} className="text-muted-foreground hover:text-foreground transition-colors">
+                          {item.is_active
+                            ? <ToggleRight className="w-5 h-5 text-green-600" />
+                            : <ToggleLeft className="w-5 h-5" />
+                          }
+                        </button>
+                      </TableCell>
+                      <TableCell className="text-sm font-medium">{item.description}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{item.vb_supplier?.company_name ?? <span className="italic">None</span>}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{item.category ?? '—'}</TableCell>
+                      <TableCell className="text-sm text-right tabular-nums">{ZAR_local(item.amount_excl_vat)}</TableCell>
+                      <TableCell>{item.vat_rated ? <Badge variant="secondary" className="text-xs">15%</Badge> : <span className="text-xs text-muted-foreground">0%</span>}</TableCell>
+                      <TableCell className="text-sm text-right tabular-nums font-medium">{ZAR_local(amount_incl_vat)}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-1 justify-end">
+                          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setEditItem(item); setShowAdd(true) }}>
+                            <Pencil className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={() => setDeleteTarget(item)}>
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          </div>
+
+          {/* Mobile cards */}
+          <div className="sm:hidden space-y-3">
+            {items.map(item => {
+              const { amount_incl_vat } = calcVat(item.amount_excl_vat, item.vat_rated)
+              return (
+                <div key={item.recurring_id} className={`rounded-xl border bg-card p-4 space-y-3 ${!item.is_active ? 'opacity-50' : ''}`}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-medium text-sm truncate">{item.description}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">{item.vb_supplier?.company_name ?? 'No supplier'}{item.category ? ` · ${item.category}` : ''}</p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {item.vat_rated ? <Badge variant="secondary" className="text-xs">15%</Badge> : <span className="text-xs text-muted-foreground">0%</span>}
+                      <button onClick={() => handleToggleActive(item)}>
+                        {item.is_active
+                          ? <ToggleRight className="w-5 h-5 text-green-600" />
+                          : <ToggleLeft className="w-5 h-5 text-muted-foreground" />
+                        }
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex items-end justify-between pt-1 border-t">
+                    <span className="text-xs text-muted-foreground">{ZAR_local(item.amount_excl_vat)} excl. VAT</span>
+                    <span className="text-sm font-semibold tabular-nums">{ZAR_local(amount_incl_vat)}/mo</span>
+                  </div>
+                  <div className="flex gap-2 pt-1 border-t">
+                    <Button variant="outline" size="sm" className="flex-1 h-8 text-xs" onClick={() => { setEditItem(item); setShowAdd(true) }}>
+                      <Pencil className="w-3 h-3 mr-1.5" />Edit
+                    </Button>
+                    <Button variant="outline" size="sm" className="flex-1 h-8 text-xs text-destructive hover:text-destructive" onClick={() => setDeleteTarget(item)}>
+                      <Trash2 className="w-3 h-3 mr-1.5" />Delete
+                    </Button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )}
+
+      {/* Add / Edit dialog */}
+      <RecurringExpenseModal
+        open={showAdd}
+        onClose={() => { setShowAdd(false); setEditItem(null) }}
+        suppliers={suppliers}
+        initial={editItem}
+        onSave={async (data, id) => {
+          if (id) await supabase.from('vb_recurring_expense').update(data).eq('recurring_id', id)
+          else    await supabase.from('vb_recurring_expense').insert([data])
+          await fetchItems()
+        }}
+      />
+
+      {/* Delete confirm */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete recurring expense?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes <strong>{deleteTarget?.description}</strong> from your recurring list. Already-generated expenses are not affected.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => deleteTarget && handleDelete(deleteTarget.recurring_id)}
+            >Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  )
+}
+
+// ─── Recurring Expense Form Modal ─────────────────────────────────────────────
+function RecurringExpenseModal({ open, onClose, suppliers, initial, onSave }: {
+  open: boolean; onClose: () => void; suppliers: Supplier[]
+  initial?: RecurringExpense | null
+  onSave: (data: Omit<RecurringExpense, 'recurring_id' | 'vb_supplier'>, id?: number) => Promise<void>
+}) {
+  const EMPTY = { supplier_id: null as number | null, description: '', amount_excl_vat: 0, vat_rated: false, is_active: true, category: '', notes: '' }
+  const [form, setForm] = useState({ ...EMPTY })
+  const [saving, setSaving] = useState(false)
+  const [error, setError]   = useState('')
+
+  useEffect(() => {
+    if (open) {
+      setForm(initial
+        ? { supplier_id: initial.supplier_id, description: initial.description, amount_excl_vat: initial.amount_excl_vat, vat_rated: initial.vat_rated, is_active: initial.is_active, category: initial.category ?? '', notes: initial.notes ?? '' }
+        : { ...EMPTY }
+      )
+      setError('')
+    }
+  }, [open, initial])
+
+  const { vat_amount, amount_incl_vat } = calcVat(form.amount_excl_vat, form.vat_rated)
+
+  async function handleSave() {
+    if (!form.description.trim()) return setError('Description is required')
+    if (!form.amount_excl_vat || form.amount_excl_vat <= 0) return setError('Amount is required')
+    setError(''); setSaving(true)
+    await onSave({
+      supplier_id: form.supplier_id,
+      description: form.description.trim(),
+      amount_excl_vat: form.amount_excl_vat,
+      vat_rated: form.vat_rated,
+      is_active: form.is_active,
+      category: form.category.trim() || null,
+      notes: form.notes.trim() || null,
+    }, initial?.recurring_id)
+    setSaving(false); onClose()
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onClose}>
+      <DialogContent className="w-full max-w-md h-[100dvh] sm:h-auto sm:max-h-[90vh] overflow-y-auto p-4 sm:p-6 rounded-none sm:rounded-xl">
+        <DialogHeader><DialogTitle>{initial ? 'Edit recurring expense' : 'Add recurring expense'}</DialogTitle></DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label>Description <span className="text-destructive">*</span></Label>
+            <Input value={form.description} placeholder="e.g. Business Insurance, Internet" onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Supplier <span className="text-muted-foreground text-xs">(optional)</span></Label>
+            <Select value={form.supplier_id ? String(form.supplier_id) : 'none'} onValueChange={v => setForm(f => ({ ...f, supplier_id: v === 'none' ? null : Number(v) }))}>
+              <SelectTrigger><SelectValue placeholder="Select supplier…" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">None / internal</SelectItem>
+                {suppliers.map(s => <SelectItem key={s.supplier_id} value={String(s.supplier_id)}>{s.company_name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Amount excl. VAT (R)</Label>
+              <Input type="number" inputMode="decimal" min={0} step={0.01} value={form.amount_excl_vat || ''} placeholder="0.00" onChange={e => setForm(f => ({ ...f, amount_excl_vat: parseFloat(e.target.value) || 0 }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Category</Label>
+              <Input value={form.category} placeholder="e.g. Utilities, Admin" onChange={e => setForm(f => ({ ...f, category: e.target.value }))} />
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Checkbox id="rec-vat" checked={form.vat_rated} onCheckedChange={v => setForm(f => ({ ...f, vat_rated: v === true }))} />
+            <Label htmlFor="rec-vat" className="cursor-pointer">VAT rated (15%)</Label>
+          </div>
+          <div className="flex items-center gap-2">
+            <Checkbox id="rec-active" checked={form.is_active} onCheckedChange={v => setForm(f => ({ ...f, is_active: v === true }))} />
+            <Label htmlFor="rec-active" className="cursor-pointer">Active (include when generating)</Label>
+          </div>
+          <div className="rounded-xl bg-muted/40 border p-3 space-y-1 text-sm">
+            <div className="flex justify-between text-muted-foreground"><span>Excl. VAT</span><span>{ZAR(form.amount_excl_vat)}</span></div>
+            <div className="flex justify-between text-muted-foreground"><span>VAT ({form.vat_rated ? '15%' : '0%'})</span><span>{ZAR(vat_amount)}</span></div>
+            <div className="flex justify-between font-medium border-t pt-1 mt-1"><span>Monthly total</span><span>{ZAR(amount_incl_vat)}</span></div>
+          </div>
+          {error && <p className="text-xs text-destructive flex items-center gap-1"><AlertCircle className="w-3 h-3" /> {error}</p>}
+          <div className="flex justify-end gap-2 pt-1 sticky bottom-0 bg-background pb-2 sm:static sm:pb-0 sm:bg-transparent">
+            <Button variant="outline" onClick={onClose} className="flex-1 sm:flex-none">Cancel</Button>
+            <Button onClick={handleSave} disabled={saving} className="flex-1 sm:flex-none">
+              {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}{initial ? 'Save changes' : 'Add recurring'}
             </Button>
           </div>
         </div>
@@ -1025,7 +1468,7 @@ export default function ExpensesPage() {
   const [loading, setLoading]       = useState(true)
   const [total, setTotal]           = useState(0)
   const [page, setPage]             = useState(1)
-  const [activeTab, setActiveTab]   = useState<'expenses' | 'analysis' | 'vendors' | 'employees'>('expenses')
+  const [activeTab, setActiveTab]   = useState<'expenses' | 'analysis' | 'recurring' | 'vendors' | 'employees'>('expenses')
   const [allExpenses, setAllExpenses] = useState<AnalyticsExpense[]>([])
 
   // Vendor modal state
@@ -1254,6 +1697,9 @@ export default function ExpensesPage() {
           <TabsTrigger value="analysis" className="rounded-lg text-xs gap-1.5 px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">
             <BarChart3 className="w-3.5 h-3.5" /> Analysis
           </TabsTrigger>
+          <TabsTrigger value="recurring" className="rounded-lg text-xs gap-1.5 px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">
+            <Repeat className="w-3.5 h-3.5" /> Recurring
+          </TabsTrigger>
           <TabsTrigger value="vendors" className="rounded-lg text-xs gap-1.5 px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">
             <Store className="w-3.5 h-3.5" /> Vendors
           </TabsTrigger>
@@ -1347,6 +1793,11 @@ export default function ExpensesPage() {
         <TabsContent value="analysis" className="mt-5 space-y-4">
           {FilterBar}
           <AnalysisTab expenses={allExpenses} />
+        </TabsContent>
+
+        {/* ── Recurring tab ── */}
+        <TabsContent value="recurring" className="mt-5">
+          <RecurringTab suppliers={suppliers} />
         </TabsContent>
 
         {/* ── Vendors tab ── */}
