@@ -7,7 +7,8 @@ import { LogOut } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 
 const NAV_LINKS = [
-  { href: '/sheets', label: 'Cash Up' },
+  { href: '/sheets', label: 'Revenue' },
+  { href: '/expenses', label: 'Expenses' },
   { href: '/curios', label: 'Curios' },
 ]
 
