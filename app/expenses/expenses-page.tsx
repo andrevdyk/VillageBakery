@@ -894,8 +894,6 @@ function GenerateRecurringModal({
         product_description: item.description,
         amount_excl_vat:     item.amount_excl_vat,
         vat_rated:           item.vat_rated,
-        vat_amount:          calcVat(item.amount_excl_vat, item.vat_rated).vat_amount,
-        amount_incl_vat:     calcVat(item.amount_excl_vat, item.vat_rated).amount_incl_vat,
       }))
 
     const { error: insertError } = await supabase.from('vb_expense').insert(toInsert)

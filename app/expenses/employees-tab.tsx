@@ -537,9 +537,9 @@ function RateModeInput<T extends string>({
           </button>
         )}
       </div>
-      <div className="flex gap-1.5">
+      <div className="space-y-1.5">
         <Select value={mode} onValueChange={v => onModeChange(v as T)}>
-          <SelectTrigger className="w-36 h-8 text-xs shrink-0">
+          <SelectTrigger className="w-full h-8 text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -548,14 +548,14 @@ function RateModeInput<T extends string>({
             ))}
           </SelectContent>
         </Select>
-        <div className="relative flex-1">
+        <div className="relative">
           <Input
             type="number"
             min={0}
             step={mode === 'multiplier' ? 0.25 : 0.01}
             value={value || ''}
             onChange={e => onValueChange(parseFloat(e.target.value) || 0)}
-            className="h-8 text-xs pr-8"
+            className="h-8 text-xs pr-10 w-full"
           />
           <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground pointer-events-none">
             {mode === 'multiplier' ? '×' : mode === 'flat_day' ? 'R/day' : 'R/h'}
