@@ -1086,7 +1086,7 @@ function PayslipHistorySheet({ open, onClose, employee, payslips, onPrint, onDel
           ) : (
             <div className="space-y-3">
               {payslips.map(p => {
-                const isPaid   = !!p.date_paid
+                const isPaid   = !!p.pay_date
                 const rateSub  = ratesSummary(p)
                 return (
                   <div key={p.payslip_id} className="rounded-xl border bg-card p-4 space-y-3">
@@ -1100,7 +1100,7 @@ function PayslipHistorySheet({ open, onClose, employee, payslips, onPrint, onDel
                       </div>
                       <div className="shrink-0">
                         {isPaid
-                          ? <span className="text-xs font-medium text-green-600 bg-green-50 border border-green-200 rounded-full px-2 py-0.5">Paid {new Date(p.date_paid!).toLocaleDateString('en-ZA')}</span>
+                          ? <span className="text-xs font-medium text-green-600 bg-green-50 border border-green-200 rounded-full px-2 py-0.5">Paid {new Date(p.pay_date!).toLocaleDateString('en-ZA')}</span>
                           : <span className="text-xs font-medium text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">Unpaid</span>}
                       </div>
                     </div>
@@ -1152,25 +1152,76 @@ function PayslipHistorySheet({ open, onClose, employee, payslips, onPrint, onDel
 function PayrollStats({ payslips, employees }: { payslips: PayslipData[]; employees: Employee[] }) {
   const now = new Date()
   const last7Start = new Date(now); last7Start.setDate(now.getDate() - 7)
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
-  const monthEnd   = new Date(now.getFullYear(), now.getMonth() + 1, 0)
-  const paidLast7     = payslips.filter(p => p.date_paid && new Date(p.date_paid) >= last7Start).reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
-  const paidThisMonth = payslips.filter(p => { if (!p.date_paid) return false; const d = new Date(p.date_paid); return d >= monthStart && d <= monthEnd }).reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
-  function bDaysInMonth(y: number, m: number) { let c = 0; const d = new Date(y, m, 1); while (d.getMonth() === m) { if (d.getDay() !== 0 && d.getDay() !== 6) c++; d.setDate(d.getDate() + 1) } return c }
-  const totalBD = bDaysInMonth(now.getFullYear(), now.getMonth())
-  const expectedNett = employees.filter(e => e.is_active).reduce((s, e) => {
-    if (e.pay_type === 'flat')   return s + Number(e.flat_rate   ?? 0)
-    if (e.pay_type === 'daily')  return s + Number(e.daily_rate  ?? 0) * totalBD
-    if (e.pay_type === 'hourly') return s + Number(e.hourly_rate ?? 0) * 8 * totalBD
-    return s
-  }, 0) * 0.99
-  const outstanding = payslips.filter(p => !p.date_paid && new Date(p.period_to) >= monthStart && new Date(p.period_to) <= monthEnd).reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
+
+  const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+  const thisMonthEnd   = new Date(now.getFullYear(), now.getMonth() + 1, 0)
+  const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+  const prevMonthEnd   = new Date(now.getFullYear(), now.getMonth(), 0)
+
+  // Paid last 7 days — payslips whose pay_date falls in the last 7 days
+  const last7Payslips  = payslips.filter(p => {
+    if (!p.pay_date) return false
+    const d = new Date(p.pay_date)
+    return d >= last7Start && d <= now
+  })
+  const paidLast7 = last7Payslips.reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
+
+  // Paid this month — payslips whose pay_date is in the current calendar month
+  const thisMonthPayslips = payslips.filter(p => {
+    if (!p.pay_date) return false
+    const d = new Date(p.pay_date)
+    return d >= thisMonthStart && d <= thisMonthEnd
+  })
+  const paidThisMonth = thisMonthPayslips.reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
+
+  // Expected this month = total nett_pay from previous month's payslips
+  const prevMonthTotal = payslips
+    .filter(p => {
+      if (!p.pay_date) return false
+      const d = new Date(p.pay_date)
+      return d >= prevMonthStart && d <= prevMonthEnd
+    })
+    .reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
+
+  // Outstanding — payslips with a pay_date this month that haven't been marked paid yet
+  const outstandingPayslips = payslips.filter(p => {
+    if (!p.pay_date) return false
+    const d = new Date(p.pay_date)
+    return d >= thisMonthStart && d <= thisMonthEnd && !p.date_paid
+  })
+  const outstanding = outstandingPayslips.reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
+
   const cards = [
-    { label: 'Paid last 7 days',    value: ZAR(paidLast7),             sub: `${payslips.filter(p => p.date_paid && new Date(p.date_paid) >= last7Start).length} payslips`,    color: '#7A9E7E', icon: <Wallet    className="w-4 h-4" /> },
-    { label: 'Paid this month',     value: ZAR(paidThisMonth),          sub: new Date(now.getFullYear(), now.getMonth(), 1).toLocaleString('en-ZA', { month: 'long', year: 'numeric' }), color: '#C4874A', icon: <TrendingUp  className="w-4 h-4" /> },
-    { label: 'Expected this month', value: ZAR(Math.round(expectedNett)), sub: `${employees.filter(e => e.is_active).length} active · est. nett`,                              color: '#5C3D2E', icon: <CalendarClock className="w-4 h-4" /> },
-    { label: 'Outstanding (unpaid)',value: ZAR(outstanding),             sub: `${payslips.filter(p => !p.date_paid && new Date(p.period_to) >= monthStart && new Date(p.period_to) <= monthEnd).length} unpaid this month`, color: '#C0614A', icon: <BanknoteIcon  className="w-4 h-4" /> },
+    {
+      label: 'Paid last 7 days',
+      value: ZAR(paidLast7),
+      sub: `${last7Payslips.length} payslip${last7Payslips.length !== 1 ? 's' : ''}`,
+      color: '#7A9E7E',
+      icon: <Wallet className="w-4 h-4" />,
+    },
+    {
+      label: 'Paid this month',
+      value: ZAR(paidThisMonth),
+      sub: now.toLocaleString('en-ZA', { month: 'long', year: 'numeric' }),
+      color: '#C4874A',
+      icon: <TrendingUp className="w-4 h-4" />,
+    },
+    {
+      label: 'Expected this month',
+      value: ZAR(Math.round(prevMonthTotal)),
+      sub: `Based on ${prevMonthStart.toLocaleString('en-ZA', { month: 'long' })} payroll`,
+      color: '#5C3D2E',
+      icon: <CalendarClock className="w-4 h-4" />,
+    },
+    {
+      label: 'Outstanding (unpaid)',
+      value: ZAR(outstanding),
+      sub: `${outstandingPayslips.length} unpaid this month`,
+      color: '#C0614A',
+      icon: <BanknoteIcon className="w-4 h-4" />,
+    },
   ]
+
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
       {cards.map(({ label, value, sub, color, icon }) => (
@@ -1211,8 +1262,8 @@ export function EmployeesTab() {
 
   const fetchAllPayslips = useCallback(async () => {
     const { data } = await supabase.from('vb_payslip')
-      .select('payslip_id, employee_id, period_from, period_to, pay_date, nett_pay, payout, date_paid, payslip_type, pay_type, flat_amount, rate, ot_rate_mode, ot_rate_value, ph_rate_mode, ph_rate_value, total_earnings')
-      .order('period_from', { ascending: false })
+      .select('payslip_id, employee_id, period_from, period_to, pay_date, date_paid, nett_pay, payout, payslip_type, pay_type, flat_amount, rate, ot_rate_mode, ot_rate_value, ph_rate_mode, ph_rate_value, total_earnings')
+      .order('pay_date', { ascending: false })
     setAllPayslips((data as PayslipData[]) ?? [])
   }, [])
 
@@ -1221,9 +1272,9 @@ export function EmployeesTab() {
   const lastPaidMap = useMemo(() => {
     const map = new Map<number, string>()
     for (const p of allPayslips) {
-      if (!p.date_paid) continue
+      if (!p.pay_date) continue
       const existing = map.get(p.employee_id)
-      if (!existing || p.date_paid > existing) map.set(p.employee_id, p.date_paid)
+      if (!existing || p.pay_date > existing) map.set(p.employee_id, p.pay_date)
     }
     return map
   }, [allPayslips])
@@ -1244,7 +1295,7 @@ export function EmployeesTab() {
 
   async function handleSavePayslip(data: Omit<PayslipData, 'payslip_id'>, existingId?: number): Promise<PayslipData> {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { vb_employee: _vb, date_paid: _dp, ...rest } = data as PayslipData
+    const { vb_employee: _vb, pay_date: _pd, ...rest } = data as PayslipData
     const dbRow = {
       ...rest,
       extra_earnings:       JSON.parse(JSON.stringify(rest.extra_earnings ?? [])),
