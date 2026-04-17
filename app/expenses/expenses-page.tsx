@@ -8,6 +8,7 @@ import {
   TrendingUp, TrendingDown, ReceiptText, BarChart3, Store,
   Pencil, Trash2, Phone, MapPin, CreditCard, FileText,
   Users, RefreshCw, Repeat, Banknote, ToggleLeft, ToggleRight,
+  Package,
 } from 'lucide-react'
 import { EmployeesTab } from './employees-tab'
 import {
@@ -39,6 +40,7 @@ import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Textarea } from '@/components/ui/textarea'
 import * as XLSX from 'xlsx'
+import { StockTab } from './stock-tab'
 
 // ─── Brand colours ────────────────────────────────────────────────────────────
 const BRAND = {
@@ -1924,6 +1926,9 @@ export default function ExpensesPage() {
           <TabsTrigger value="employees" className="rounded-lg text-xs gap-1.5 px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">
             <Users className="w-3.5 h-3.5" /> Employees
           </TabsTrigger>
+          <TabsTrigger value="stock" className="rounded-lg text-xs gap-1.5 px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">
+            <Package className="w-3.5 h-3.5" /> Stock
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="expenses" className="mt-5 space-y-4">
@@ -2025,6 +2030,10 @@ export default function ExpensesPage() {
 
         <TabsContent value="employees" className="mt-5">
           <EmployeesTab />
+        </TabsContent>
+        
+        <TabsContent value="stock" className="mt-5">
+          <StockTab />
         </TabsContent>
       </Tabs>
 
