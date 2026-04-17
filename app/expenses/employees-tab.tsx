@@ -27,6 +27,7 @@ import { Label }    from '@/components/ui/label'
 import { Badge }    from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Textarea } from '@/components/ui/textarea'
+import { EmployeeDashboard } from './employee-dashboard'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -64,6 +65,11 @@ export type OtRateMode = 'multiplier' | 'flat'
 export type PhRateMode = 'multiplier' | 'hourly' | 'flat_day'
 
 interface ExtraEarning {
+  label: string
+  amount: number
+}
+
+interface ExtraDeduction {
   label: string
   amount: number
 }
@@ -608,8 +614,7 @@ function GeneratePayslipModal({
   const [extraEarnings,  setExtraEarnings]  = useState<ExtraEarning[]>([])
 
   // ── Deductions / notes ──────────────────────────────────────────────────
-  const [otherDeductions,      setOtherDeductions]      = useState(0)
-  const [otherDeductionsLabel, setOtherDeductionsLabel] = useState('')
+  const [extraDeductions, setExtraDeductions] = useState<ExtraDeduction[]>([])
   const [notes,                setNotes]                = useState('')
   const [saving,  setSaving]  = useState(false)
   const [error,   setError]   = useState('')
@@ -633,8 +638,11 @@ function GeneratePayslipModal({
       setLeaveDays(initialData.leave_days ?? 0)
       setBonus(initialData.bonus ?? 0)
       setExtraEarnings(Array.isArray(initialData.extra_earnings) ? initialData.extra_earnings : [])
-      setOtherDeductions(initialData.other_deductions ?? 0)
-      setOtherDeductionsLabel(initialData.other_deductions_label ?? '')
+      setExtraDeductions(
+        initialData.other_deductions > 0
+          ? [{ label: initialData.other_deductions_label ?? '', amount: initialData.other_deductions }]
+          : []
+      )
       setNotes(initialData.notes ?? '')
       setOtMode(initialData.ot_rate_mode   ?? DEFAULT_OT_MODE)
       setOtValue(initialData.ot_rate_value ?? DEFAULT_OT_VALUE)
@@ -649,7 +657,7 @@ function GeneratePayslipModal({
     setRate(emp.pay_type === 'hourly' ? (emp.hourly_rate ?? 0) : emp.pay_type === 'daily' ? (emp.daily_rate ?? 0) : (emp.flat_rate ?? 0))
     setOvertimeHours(0); setPhHours(0); setPhDays(0); setLeaveDays(0); setBonus(0)
     setExtraEarnings([])
-    setOtherDeductions(0); setOtherDeductionsLabel(''); setNotes('')
+    setExtraDeductions([]); setNotes('')
     setOtMode(DEFAULT_OT_MODE);  setOtValue(DEFAULT_OT_VALUE)
     setPhMode(DEFAULT_PH_MODE);  setPhValue(DEFAULT_PH_VALUE)
     setPreview(null); setError('')
@@ -698,8 +706,8 @@ function GeneratePayslipModal({
     overtime_hours: overtimeHours,
     public_holiday_hours: phHours, public_holiday_days: phDays,
     leave_days: leaveDays, bonus, extra_earnings: extraEarnings,
-    other_deductions: otherDeductions,
-  }), [payType, rate, otMode, otValue, phMode, phValue, regularHours, regularDays, overtimeHours, phHours, phDays, leaveDays, bonus, extraEarnings, otherDeductions])
+    other_deductions: extraDeductions.reduce((s, d) => s + (d.amount || 0), 0),
+  }), [payType, rate, otMode, otValue, phMode, phValue, regularHours, regularDays, overtimeHours, phHours, phDays, leaveDays, bonus, extraEarnings, extraDeductions])
 
   // ── Derived display values ──────────────────────────────────────────────
   const effectiveOtRate = resolveOtRate(rate, otMode, otValue)
@@ -718,8 +726,10 @@ function GeneratePayslipModal({
       public_holiday_hours: phHours, public_holiday_days: phDays,
       leave_days: leaveDays, bonus,
       extra_earnings: extraEarnings.filter(e => e.amount > 0),
-      other_deductions: otherDeductions,
-      other_deductions_label: otherDeductionsLabel || null,
+      other_deductions: extraDeductions.reduce((s, d) => s + (d.amount || 0), 0),
+      other_deductions_label: extraDeductions.filter(d => d.amount > 0).length > 0
+      ? JSON.stringify(extraDeductions.filter(d => d.amount > 0))
+      : null,
       ...calc,
       notes: notes || null,
     }
@@ -916,10 +926,39 @@ function GeneratePayslipModal({
             {/* Additional deductions */}
             <div className="rounded-xl border p-4 space-y-3">
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Additional deductions</p>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5"><Label className="text-xs">Label</Label><Input placeholder="e.g. Uniform advance" value={otherDeductionsLabel} onChange={e => setOtherDeductionsLabel(e.target.value)} /></div>
-                <div className="space-y-1.5"><Label className="text-xs">Amount (R)</Label><Input type="number" min={0} step={0.01} value={otherDeductions || ''} placeholder="0.00" onChange={e => setOtherDeductions(parseFloat(e.target.value) || 0)} /></div>
-              </div>
+              {extraDeductions.length === 0 && (
+                <p className="text-xs text-muted-foreground">No additional deductions added.</p>
+              )}
+              {extraDeductions.map((row, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <Input
+                    className="flex-1 h-8 text-xs"
+                    placeholder="Label (e.g. Uniform advance)"
+                    value={row.label}
+                    onChange={e => setExtraDeductions(r => r.map((d, idx) => idx === i ? { ...d, label: e.target.value } : d))}
+                  />
+                  <Input
+                    className="w-28 h-8 text-xs"
+                    type="number" min={0} step={0.01} placeholder="0.00"
+                    value={row.amount || ''}
+                    onChange={e => setExtraDeductions(r => r.map((d, idx) => idx === i ? { ...d, amount: parseFloat(e.target.value) || 0 } : d))}
+                  />
+                  <Button
+                    variant="ghost" size="icon"
+                    className="h-8 w-8 text-muted-foreground hover:text-destructive shrink-0"
+                    onClick={() => setExtraDeductions(r => r.filter((_, idx) => idx !== i))}
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </Button>
+                </div>
+              ))}
+              <Button
+                variant="outline" size="sm"
+                className="w-full h-8 text-xs border-dashed gap-1.5"
+                onClick={() => setExtraDeductions(r => [...r, { label: '', amount: 0 }])}
+              >
+                <Plus className="w-3.5 h-3.5" /> Add deduction
+              </Button>
             </div>
 
             {/* Live calculation preview */}
@@ -946,7 +985,12 @@ function GeneratePayslipModal({
               ))}
               <div className="flex justify-between font-medium border-t pt-1.5 mt-1"><span>Total earnings</span><span>{ZAR(calc.total_earnings)}</span></div>
               <div className="flex justify-between text-muted-foreground"><span>UIF (1%)</span><span>− {ZAR(calc.uif_employee)}</span></div>
-              {otherDeductions > 0 && <div className="flex justify-between text-muted-foreground"><span>{otherDeductionsLabel || 'Other deduction'}</span><span>− {ZAR(otherDeductions)}</span></div>}
+              {extraDeductions.filter(d => d.amount > 0).map((d, i) => (
+                <div key={i} className="flex justify-between text-muted-foreground">
+                  <span>{d.label || 'Deduction'}</span>
+                  <span>− {ZAR(d.amount)}</span>
+                </div>
+              ))}
               <div className="flex justify-between font-semibold text-base border-t pt-1.5 mt-1"><span>Nett pay</span><span>{ZAR(calc.nett_pay)}</span></div>
               <div className="flex justify-between text-muted-foreground text-xs"><span>Payout (rounded to 10c)</span><span>{ZAR(calc.payout)}</span></div>
             </div>
@@ -1151,77 +1195,74 @@ function PayslipHistorySheet({ open, onClose, employee, payslips, onPrint, onDel
 
 function PayrollStats({ payslips, employees }: { payslips: PayslipData[]; employees: Employee[] }) {
   const now = new Date()
-  const last7Start = new Date(now); last7Start.setDate(now.getDate() - 7)
-
-  const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1)
-  const thisMonthEnd   = new Date(now.getFullYear(), now.getMonth() + 1, 0)
-  const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1)
-  const prevMonthEnd   = new Date(now.getFullYear(), now.getMonth(), 0)
-
-  // Paid last 7 days — payslips whose pay_date falls in the last 7 days
-  const last7Payslips  = payslips.filter(p => {
-    if (!p.pay_date) return false
-    const d = new Date(p.pay_date)
-    return d >= last7Start && d <= now
-  })
-  const paidLast7 = last7Payslips.reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
-
-  // Paid this month — payslips whose pay_date is in the current calendar month
-  const thisMonthPayslips = payslips.filter(p => {
-    if (!p.pay_date) return false
-    const d = new Date(p.pay_date)
-    return d >= thisMonthStart && d <= thisMonthEnd
-  })
-  const paidThisMonth = thisMonthPayslips.reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
-
-  // Expected this month = total nett_pay from previous month's payslips
-  const prevMonthTotal = payslips
-    .filter(p => {
-      if (!p.pay_date) return false
-      const d = new Date(p.pay_date)
-      return d >= prevMonthStart && d <= prevMonthEnd
-    })
-    .reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
-
-  // Outstanding — payslips with a pay_date this month that haven't been marked paid yet
-  const outstandingPayslips = payslips.filter(p => {
-    if (!p.pay_date) return false
-    const d = new Date(p.pay_date)
-    return d >= thisMonthStart && d <= thisMonthEnd && !p.date_paid
-  })
-  const outstanding = outstandingPayslips.reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
-
+ 
+  // Build YYYY-MM-DD boundary strings in LOCAL time (avoids UTC shift)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const y   = now.getFullYear()
+  const m   = now.getMonth() // 0-indexed
+ 
+  const todayStr        = `${y}-${pad(m + 1)}-${pad(now.getDate())}`
+  const last7Str        = (() => { const d = new Date(now); d.setDate(now.getDate() - 7); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` })()
+  const thisMonthStart  = `${y}-${pad(m + 1)}-01`
+  const thisMonthEnd    = `${y}-${pad(m + 1)}-${pad(new Date(y, m + 1, 0).getDate())}`
+  const prevY           = m === 0 ? y - 1 : y
+  const prevM           = m === 0 ? 12 : m  // 1-indexed month number for prev month
+  const prevMonthStart  = `${prevY}-${pad(prevM)}-01`
+  const prevMonthEnd    = `${prevY}-${pad(prevM)}-${pad(new Date(prevY, prevM, 0).getDate())}`
+ 
+  // Helper: is a YYYY-MM-DD string within [from, to] inclusive?
+  const inRange = (d: string | null | undefined, from: string, to: string) =>
+    !!d && d >= from && d <= to
+ 
+  // Paid last 7 days
+  const last7Payslips = payslips.filter(p => inRange(p.pay_date, last7Str, todayStr))
+  const paidLast7     = last7Payslips.reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
+ 
+  // Paid this month
+  const thisMonthPayslips = payslips.filter(p => inRange(p.pay_date, thisMonthStart, thisMonthEnd))
+  const paidThisMonth     = thisMonthPayslips.reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
+ 
+  // Expected this month = previous month's total (as baseline for current month)
+  const prevMonthPayslips = payslips.filter(p => inRange(p.pay_date, prevMonthStart, prevMonthEnd))
+  const prevMonthTotal    = prevMonthPayslips.reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
+ 
+  // Outstanding = this month's payslips with a future pay_date (scheduled, not yet paid)
+  const outstandingPayslips = payslips.filter(p => inRange(p.pay_date, thisMonthStart, thisMonthEnd) && !!p.pay_date && p.pay_date > todayStr)
+  const outstanding         = outstandingPayslips.reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
+ 
+  const prevMonthName = new Date(prevY, prevM - 1, 1).toLocaleString('en-ZA', { month: 'long' })
+ 
   const cards = [
     {
       label: 'Paid last 7 days',
       value: ZAR(paidLast7),
-      sub: `${last7Payslips.length} payslip${last7Payslips.length !== 1 ? 's' : ''}`,
+      sub:   `${last7Payslips.length} payslip${last7Payslips.length !== 1 ? 's' : ''}`,
       color: '#7A9E7E',
-      icon: <Wallet className="w-4 h-4" />,
+      icon:  <Wallet className="w-4 h-4" />,
     },
     {
       label: 'Paid this month',
       value: ZAR(paidThisMonth),
-      sub: now.toLocaleString('en-ZA', { month: 'long', year: 'numeric' }),
+      sub:   now.toLocaleString('en-ZA', { month: 'long', year: 'numeric' }),
       color: '#C4874A',
-      icon: <TrendingUp className="w-4 h-4" />,
+      icon:  <TrendingUp className="w-4 h-4" />,
     },
     {
       label: 'Expected this month',
       value: ZAR(Math.round(prevMonthTotal)),
-      sub: `Based on ${prevMonthStart.toLocaleString('en-ZA', { month: 'long' })} payroll`,
+      sub:   `Based on ${prevMonthName} payroll`,
       color: '#5C3D2E',
-      icon: <CalendarClock className="w-4 h-4" />,
+      icon:  <CalendarClock className="w-4 h-4" />,
     },
     {
       label: 'Outstanding (unpaid)',
       value: ZAR(outstanding),
-      sub: `${outstandingPayslips.length} unpaid this month`,
+      sub:   `${outstandingPayslips.length} scheduled ahead`,
       color: '#C0614A',
-      icon: <BanknoteIcon className="w-4 h-4" />,
+      icon:  <BanknoteIcon className="w-4 h-4" />,
     },
   ]
-
+ 
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
       {cards.map(({ label, value, sub, color, icon }) => (
@@ -1255,26 +1296,33 @@ export function EmployeesTab() {
   const [search,            setSearch]            = useState('')
   const [showInactive,      setShowInactive]      = useState(false)
 
-  const fetchEmployees = useCallback(async () => {
-    const { data } = await supabase.from('vb_employee').select('*').order('full_name')
+  const fetchEmployees = async () => {
+    const { data, error } = await supabase.from('vb_employee').select('*').order('full_name')
+    if (error) console.error('fetchEmployees error:', error)
     setEmployees((data as Employee[]) ?? [])
-  }, [])
+  }
 
-  const fetchAllPayslips = useCallback(async () => {
-    const { data } = await supabase.from('vb_payslip')
-      .select('payslip_id, employee_id, period_from, period_to, pay_date, date_paid, nett_pay, payout, payslip_type, pay_type, flat_amount, rate, ot_rate_mode, ot_rate_value, ph_rate_mode, ph_rate_value, total_earnings')
-      .order('pay_date', { ascending: false })
-    setAllPayslips((data as PayslipData[]) ?? [])
-  }, [])
+    const fetchAllPayslips = async () => {
+      const { data, error } = await supabase.from('vb_payslip')
+        .select('*')
+        .order('pay_date', { ascending: false })
+      if (error) console.error('fetchAllPayslips error:', error)
+      console.log('fetchAllPayslips result:', data?.length, data?.[0])
+      setAllPayslips((data as PayslipData[]) ?? [])
+    }
 
-  useEffect(() => { fetchEmployees(); fetchAllPayslips() }, [fetchEmployees, fetchAllPayslips])
+  useEffect(() => {
+    fetchEmployees()
+    fetchAllPayslips()
+  }, [])
 
   const lastPaidMap = useMemo(() => {
     const map = new Map<number, string>()
     for (const p of allPayslips) {
-      if (!p.pay_date) continue
+      const d = p.pay_date
+      if (!d) continue
       const existing = map.get(p.employee_id)
-      if (!existing || p.pay_date > existing) map.set(p.employee_id, p.pay_date)
+      if (!existing || d > existing) map.set(p.employee_id, d)
     }
     return map
   }, [allPayslips])
@@ -1294,15 +1342,15 @@ export function EmployeesTab() {
   }
 
   async function handleSavePayslip(data: Omit<PayslipData, 'payslip_id'>, existingId?: number): Promise<PayslipData> {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { vb_employee: _vb, pay_date: _pd, ...rest } = data as PayslipData
+    // KEY FIX: only strip vb_employee, NOT pay_date
+    const { vb_employee: _vb, ...rest } = data as PayslipData
     const dbRow = {
       ...rest,
       extra_earnings:       JSON.parse(JSON.stringify(rest.extra_earnings ?? [])),
-      ot_rate_mode:         rest.ot_rate_mode  ?? DEFAULT_OT_MODE,
-      ot_rate_value:        Number(rest.ot_rate_value  ?? DEFAULT_OT_VALUE),
-      ph_rate_mode:         rest.ph_rate_mode  ?? DEFAULT_PH_MODE,
-      ph_rate_value:        Number(rest.ph_rate_value  ?? DEFAULT_PH_VALUE),
+      ot_rate_mode:         rest.ot_rate_mode  ?? 'multiplier',
+      ot_rate_value:        Number(rest.ot_rate_value  ?? 1.5),
+      ph_rate_mode:         rest.ph_rate_mode  ?? 'multiplier',
+      ph_rate_value:        Number(rest.ph_rate_value  ?? 2.0),
       flat_amount:          Number(rest.flat_amount          ?? 0),
       rate:                 Number(rest.rate                 ?? 0),
       regular_hours:        Number(rest.regular_hours        ?? 0),
@@ -1327,6 +1375,7 @@ export function EmployeesTab() {
       const { error } = await supabase.from('vb_payslip').update(dbRow).eq('payslip_id', existingId)
       if (error) console.error('Payslip update error:', error)
       if (historyEmployee) await handleViewHistory(historyEmployee)
+      await fetchAllPayslips()
       return { ...data, payslip_id: existingId }
     }
     const { data: saved, error } = await supabase.from('vb_payslip').insert([dbRow]).select().single()
@@ -1351,7 +1400,7 @@ export function EmployeesTab() {
     if (historyEmployee) await handleViewHistory(historyEmployee)
     await fetchAllPayslips()
   }
-
+ 
   async function handleMarkPayslipPaid(id: number, datePaid: string) {
     await supabase.from('vb_payslip').update({ date_paid: datePaid }).eq('payslip_id', id)
     if (historyEmployee) await handleViewHistory(historyEmployee)
@@ -1461,7 +1510,16 @@ export function EmployeesTab() {
 
       <EmployeeModal open={employeeModalOpen} onClose={() => setEmployeeModalOpen(false)} initial={editingEmployee} onSave={handleSaveEmployee} />
       <GeneratePayslipModal open={!!payslipEmployee} onClose={() => { setPayslipEmployee(null); setEditingPayslip(null) }} employee={payslipEmployee} onSave={handleSavePayslip} initialData={editingPayslip} />
-      <PayslipHistorySheet open={!!historyEmployee} onClose={() => setHistoryEmployee(null)} employee={historyEmployee} payslips={employeePayslips} onPrint={handlePrintHistorical} onDelete={handleDeletePayslip} onMarkPaid={handleMarkPayslipPaid} onEdit={handleEditPayslip} />
+      <EmployeeDashboard
+        open={!!historyEmployee}
+        onClose={() => setHistoryEmployee(null)}
+        employee={historyEmployee}
+        payslips={employeePayslips}
+        onPrint={handlePrintHistorical}
+        onDelete={handleDeletePayslip}
+        onMarkPaid={handleMarkPayslipPaid}
+        onEdit={handleEditPayslip}
+      />
     </div>
   )
 }
