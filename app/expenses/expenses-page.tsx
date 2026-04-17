@@ -200,7 +200,6 @@ function VendorModal({
           <DialogTitle>{isEdit ? 'Edit vendor' : 'Add vendor'}</DialogTitle>
         </DialogHeader>
         <div className="space-y-4">
-          {/* Company name */}
           <div className="space-y-1.5">
             <Label>Company name <span className="text-destructive">*</span></Label>
             <Input
@@ -209,8 +208,6 @@ function VendorModal({
               onChange={e => set('company_name', e.target.value)}
             />
           </div>
-
-          {/* Phone + Address */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label>Phone number</Label>
@@ -221,8 +218,6 @@ function VendorModal({
               <Input value={form.address ?? ''} placeholder="Street, City" onChange={e => set('address', e.target.value)} />
             </div>
           </div>
-
-          {/* Tax + VAT number */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label>Tax number</Label>
@@ -233,8 +228,6 @@ function VendorModal({
               <Input value={form.vat_number ?? ''} placeholder="VAT registration no." onChange={e => set('vat_number', e.target.value)} />
             </div>
           </div>
-
-          {/* VAT registered toggle */}
           <div className="flex items-center gap-2">
             <Checkbox
               id="vat-reg"
@@ -243,8 +236,6 @@ function VendorModal({
             />
             <Label htmlFor="vat-reg" className="cursor-pointer">VAT registered supplier</Label>
           </div>
-
-          {/* Account + payment terms */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label>Bank account number</Label>
@@ -255,8 +246,6 @@ function VendorModal({
               <Input value={form.payment_terms ?? ''} placeholder="e.g. Net 30" onChange={e => set('payment_terms', e.target.value)} />
             </div>
           </div>
-
-          {/* Notes */}
           <div className="space-y-1.5">
             <Label>Notes</Label>
             <Textarea
@@ -266,13 +255,11 @@ function VendorModal({
               onChange={e => set('notes', e.target.value)}
             />
           </div>
-
           {error && (
             <p className="text-xs text-destructive flex items-center gap-1">
               <AlertCircle className="w-3 h-3" /> {error}
             </p>
           )}
-
           <div className="flex justify-end gap-2 pt-1 sticky bottom-0 bg-background pb-2 sm:static sm:pb-0 sm:bg-transparent">
             <Button variant="outline" onClick={onClose} className="flex-1 sm:flex-none">Cancel</Button>
             <Button onClick={handleSave} disabled={saving} className="flex-1 sm:flex-none">
@@ -329,7 +316,6 @@ function VendorsTab({
         </div>
       ) : (
         <>
-          {/* Desktop table */}
           <div className="hidden sm:block rounded-xl border overflow-hidden">
             <Table>
               <TableHeader>
@@ -372,7 +358,6 @@ function VendorsTab({
             </Table>
           </div>
 
-          {/* Mobile cards */}
           <div className="sm:hidden space-y-3">
             {filtered.map(s => (
               <div key={s.supplier_id} className="rounded-xl border bg-card p-4 space-y-3">
@@ -420,7 +405,6 @@ function VendorsTab({
         </>
       )}
 
-      {/* Delete confirm dialog */}
       <AlertDialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -561,14 +545,12 @@ function AddExpenseModal({ open, onClose, suppliers, onSave }: {
   open: boolean; onClose: () => void; suppliers: Supplier[]
   onSave: (row: ExpenseRow) => Promise<void>
 }) {
-  // 'expense' = normal supplier expense, 'bank' = bank fees (no supplier needed)
   const [mode, setMode]     = useState<'expense' | 'bank'>('expense')
   const [form, setForm]     = useState<Partial<ExpenseRow>>({ vat_rated: false, amount_excl_vat: 0 })
   const [bankFees, setBankFees] = useState({ amount: 0, description: 'Bank charges', date: new Date().toISOString().split('T')[0], date_paid: '' })
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState('')
 
-  // Reset on open
   useEffect(() => {
     if (open) {
       setMode('expense')
@@ -585,10 +567,7 @@ function AddExpenseModal({ open, onClose, suppliers, onSave }: {
     if (mode === 'bank') {
       if (!bankFees.amount || bankFees.amount <= 0) return setError('Please enter a bank fee amount')
       if (!bankFees.date) return setError('Please enter a date')
-      // Bank fees: no supplier, VAT-exempt, description = bank charges
       setError(''); setSaving(true)
-      // For bank fees we omit supplier_id so it's null in the DB
-      // (requires supplier_id to be nullable in vb_expense — see migration)
       await onSave({
         invoice_date: bankFees.date,
         product_description: bankFees.description || 'Bank charges',
@@ -612,8 +591,6 @@ function AddExpenseModal({ open, onClose, suppliers, onSave }: {
       <DialogContent className="w-full max-w-md h-[100dvh] sm:h-auto sm:max-h-[90vh] overflow-y-auto p-4 sm:p-6 rounded-none sm:rounded-xl">
         <DialogHeader><DialogTitle>Add expense</DialogTitle></DialogHeader>
         <div className="space-y-4">
-
-          {/* Mode toggle */}
           <div className="flex rounded-xl bg-muted p-1 gap-1">
             <button
               onClick={() => setMode('expense')}
@@ -630,7 +607,6 @@ function AddExpenseModal({ open, onClose, suppliers, onSave }: {
           </div>
 
           {mode === 'bank' ? (
-            /* ── Bank fees form ── */
             <div className="space-y-4">
               <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
                 Bank fees are recorded as zero-rated (0% VAT) expenses with no supplier.
@@ -667,7 +643,6 @@ function AddExpenseModal({ open, onClose, suppliers, onSave }: {
               </div>
             </div>
           ) : (
-            /* ── Normal supplier expense form ── */
             <div className="space-y-4">
               <div className="space-y-1.5">
                 <Label>Supplier</Label>
@@ -714,16 +689,400 @@ function AddExpenseModal({ open, onClose, suppliers, onSave }: {
   )
 }
 
+// ─── Recurring Expense Form Modal ─────────────────────────────────────────────
+function RecurringExpenseModal({ open, onClose, suppliers, initial, onSave }: {
+  open: boolean; onClose: () => void; suppliers: Supplier[]
+  initial?: RecurringExpense | null
+  onSave: (data: Omit<RecurringExpense, 'recurring_id' | 'vb_supplier'>, id?: number) => Promise<void>
+}) {
+  const EMPTY = { supplier_id: null as number | null, description: '', amount_excl_vat: 0, vat_rated: false, is_active: true, category: '', notes: '' }
+  const [form, setForm] = useState({ ...EMPTY })
+  const [saving, setSaving] = useState(false)
+  const [error, setError]   = useState('')
+
+  useEffect(() => {
+    if (open) {
+      setForm(initial
+        ? { supplier_id: initial.supplier_id, description: initial.description, amount_excl_vat: initial.amount_excl_vat, vat_rated: initial.vat_rated, is_active: initial.is_active, category: initial.category ?? '', notes: initial.notes ?? '' }
+        : { ...EMPTY }
+      )
+      setError('')
+    }
+  }, [open, initial])
+
+  const { vat_amount, amount_incl_vat } = calcVat(form.amount_excl_vat, form.vat_rated)
+
+  async function handleSave() {
+    if (!form.description.trim()) return setError('Description is required')
+    if (!form.amount_excl_vat || form.amount_excl_vat <= 0) return setError('Amount is required')
+    setError(''); setSaving(true)
+    await onSave({
+      supplier_id: form.supplier_id,
+      description: form.description.trim(),
+      amount_excl_vat: form.amount_excl_vat,
+      vat_rated: form.vat_rated,
+      is_active: form.is_active,
+      category: form.category.trim() || null,
+      notes: form.notes.trim() || null,
+    }, initial?.recurring_id)
+    setSaving(false); onClose()
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onClose}>
+      <DialogContent className="w-full max-w-md h-[100dvh] sm:h-auto sm:max-h-[90vh] overflow-y-auto p-4 sm:p-6 rounded-none sm:rounded-xl">
+        <DialogHeader><DialogTitle>{initial ? 'Edit recurring expense' : 'Add recurring expense'}</DialogTitle></DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label>Description <span className="text-destructive">*</span></Label>
+            <Input value={form.description} placeholder="e.g. Business Insurance, Internet" onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Supplier <span className="text-muted-foreground text-xs">(optional)</span></Label>
+            <Select value={form.supplier_id ? String(form.supplier_id) : 'none'} onValueChange={v => setForm(f => ({ ...f, supplier_id: v === 'none' ? null : Number(v) }))}>
+              <SelectTrigger><SelectValue placeholder="Select supplier…" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">None / internal</SelectItem>
+                {suppliers.map(s => <SelectItem key={s.supplier_id} value={String(s.supplier_id)}>{s.company_name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Amount excl. VAT (R)</Label>
+              <Input type="number" inputMode="decimal" min={0} step={0.01} value={form.amount_excl_vat || ''} placeholder="0.00" onChange={e => setForm(f => ({ ...f, amount_excl_vat: parseFloat(e.target.value) || 0 }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Category</Label>
+              <Input value={form.category} placeholder="e.g. Utilities, Admin" onChange={e => setForm(f => ({ ...f, category: e.target.value }))} />
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Checkbox id="rec-vat" checked={form.vat_rated} onCheckedChange={v => setForm(f => ({ ...f, vat_rated: v === true }))} />
+            <Label htmlFor="rec-vat" className="cursor-pointer">VAT rated (15%)</Label>
+          </div>
+          <div className="flex items-center gap-2">
+            <Checkbox id="rec-active" checked={form.is_active} onCheckedChange={v => setForm(f => ({ ...f, is_active: v === true }))} />
+            <Label htmlFor="rec-active" className="cursor-pointer">Active (include when generating)</Label>
+          </div>
+          <div className="rounded-xl bg-muted/40 border p-3 space-y-1 text-sm">
+            <div className="flex justify-between text-muted-foreground"><span>Excl. VAT</span><span>{ZAR(form.amount_excl_vat)}</span></div>
+            <div className="flex justify-between text-muted-foreground"><span>VAT ({form.vat_rated ? '15%' : '0%'})</span><span>{ZAR(vat_amount)}</span></div>
+            <div className="flex justify-between font-medium border-t pt-1 mt-1"><span>Monthly total</span><span>{ZAR(amount_incl_vat)}</span></div>
+          </div>
+          {error && <p className="text-xs text-destructive flex items-center gap-1"><AlertCircle className="w-3 h-3" /> {error}</p>}
+          <div className="flex justify-end gap-2 pt-1 sticky bottom-0 bg-background pb-2 sm:static sm:pb-0 sm:bg-transparent">
+            <Button variant="outline" onClick={onClose} className="flex-1 sm:flex-none">Cancel</Button>
+            <Button onClick={handleSave} disabled={saving} className="flex-1 sm:flex-none">
+              {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}{initial ? 'Save changes' : 'Add recurring'}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ─── Generate Recurring Modal ─────────────────────────────────────────────────
+function GenerateRecurringModal({
+  open, onClose, items, suppliers, supabase, onGenerated,
+}: {
+  open: boolean
+  onClose: () => void
+  items: RecurringExpense[]
+  suppliers: Supplier[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any
+  onGenerated: (count: number, monthLabel: string) => void
+}) {
+  const now = new Date()
+  const defaultDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+
+  const [invoiceDate, setInvoiceDate] = useState(defaultDate)
+  const [selected, setSelected]       = useState<Set<number>>(new Set())
+  const [alreadyDone, setAlreadyDone] = useState<Set<number>>(new Set())
+  const [checking, setChecking]       = useState(false)
+  const [generating, setGenerating]   = useState(false)
+  const [error, setError]             = useState('')
+
+  const activeItems = items.filter(i => i.is_active)
+
+  // Pre-select all active items on open
+  useEffect(() => {
+    if (!open) return
+    setInvoiceDate(defaultDate)
+    setSelected(new Set(activeItems.map(i => i.recurring_id)))
+    setAlreadyDone(new Set())
+    setError('')
+  }, [open])
+
+  // Re-run duplicate check whenever invoice date changes
+  useEffect(() => {
+    if (!open || !invoiceDate) return
+    checkDuplicates(invoiceDate)
+  }, [invoiceDate, open])
+
+  async function checkDuplicates(date: string) {
+    if (!date) return
+    setChecking(true)
+    const d    = new Date(date)
+    const y    = d.getFullYear()
+    const m    = String(d.getMonth() + 1).padStart(2, '0')
+    const last = new Date(y, d.getMonth() + 1, 0).getDate()
+    const from = `${y}-${m}-01`
+    const to   = `${y}-${m}-${last}`
+
+    const { data } = await supabase
+      .from('vb_expense')
+      .select('product_description, supplier_id')
+      .gte('invoice_date', from)
+      .lte('invoice_date', to)
+
+    const done = new Set<number>()
+    if (data) {
+      for (const item of activeItems) {
+        const match = data.some(
+          (row: { product_description: string | null; supplier_id: number | null }) =>
+            row.product_description?.trim().toLowerCase() === item.description.trim().toLowerCase() &&
+            row.supplier_id === item.supplier_id
+        )
+        if (match) done.add(item.recurring_id)
+      }
+    }
+
+    setAlreadyDone(done)
+    // Auto-deselect items already done
+    setSelected(prev => {
+      const next = new Set(prev)
+      done.forEach(id => next.delete(id))
+      return next
+    })
+    setChecking(false)
+  }
+
+  function toggleItem(id: number) {
+    if (alreadyDone.has(id)) return
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleAll() {
+    const selectable = activeItems.filter(i => !alreadyDone.has(i.recurring_id))
+    const allSelected = selectable.every(i => selected.has(i.recurring_id))
+    if (allSelected) {
+      setSelected(new Set())
+    } else {
+      setSelected(new Set(selectable.map(i => i.recurring_id)))
+    }
+  }
+
+  async function handleGenerate() {
+    if (!invoiceDate) return setError('Please choose an invoice date.')
+    if (selected.size === 0) return setError('Select at least one item to generate.')
+    setError('')
+    setGenerating(true)
+
+    const toInsert = activeItems
+      .filter(i => selected.has(i.recurring_id))
+      .map(item => ({
+        supplier_id:         item.supplier_id,
+        invoice_date:        invoiceDate,
+        product_description: item.description,
+        amount_excl_vat:     item.amount_excl_vat,
+        vat_rated:           item.vat_rated,
+        vat_amount:          calcVat(item.amount_excl_vat, item.vat_rated).vat_amount,
+        amount_incl_vat:     calcVat(item.amount_excl_vat, item.vat_rated).amount_incl_vat,
+      }))
+
+    const { error: insertError } = await supabase.from('vb_expense').insert(toInsert)
+    setGenerating(false)
+
+    if (insertError) {
+      setError(`Insert failed: ${insertError.message}`)
+      return
+    }
+
+    const d = new Date(invoiceDate)
+    const monthLabel = d.toLocaleString('en-ZA', { month: 'long', year: 'numeric' })
+    onGenerated(toInsert.length, monthLabel)
+    onClose()
+  }
+
+  const selectableCount = activeItems.filter(i => !alreadyDone.has(i.recurring_id)).length
+  const allSelectableSelected =
+    selectableCount > 0 &&
+    activeItems.filter(i => !alreadyDone.has(i.recurring_id)).every(i => selected.has(i.recurring_id))
+
+  return (
+    <Dialog open={open} onOpenChange={onClose}>
+      <DialogContent className="w-full max-w-lg h-[100dvh] sm:h-auto sm:max-h-[90vh] overflow-y-auto p-4 sm:p-6 rounded-none sm:rounded-xl">
+        <DialogHeader>
+          <DialogTitle>Generate recurring expenses</DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-5 mt-1">
+
+          {/* Invoice date */}
+          <div className="space-y-1.5">
+            <Label>Invoice date</Label>
+            <Input
+              type="date"
+              value={invoiceDate}
+              onChange={e => setInvoiceDate(e.target.value)}
+              className="max-w-[200px]"
+            />
+            <p className="text-xs text-muted-foreground">
+              The duplicate check runs against the calendar month of this date.
+            </p>
+          </div>
+
+          {/* Item list */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs text-muted-foreground uppercase tracking-wide">
+                Select items to generate
+              </Label>
+              {selectableCount > 0 && (
+                <button
+                  className="text-[11px] underline text-muted-foreground hover:text-foreground"
+                  onClick={toggleAll}
+                >
+                  {allSelectableSelected ? 'Deselect all' : 'Select all'}
+                </button>
+              )}
+            </div>
+
+            {checking && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground py-1">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Checking for duplicates…
+              </div>
+            )}
+
+            <div className="rounded-xl border divide-y overflow-hidden">
+              {activeItems.length === 0 && (
+                <p className="text-sm text-muted-foreground text-center py-8">
+                  No active recurring expenses.
+                </p>
+              )}
+              {activeItems.map(item => {
+                const isDone     = alreadyDone.has(item.recurring_id)
+                const isSelected = selected.has(item.recurring_id)
+                const { amount_incl_vat } = calcVat(item.amount_excl_vat, item.vat_rated)
+                const supplierName = item.vb_supplier?.company_name ??
+                  suppliers.find(s => s.supplier_id === item.supplier_id)?.company_name
+
+                return (
+                  <div
+                    key={item.recurring_id}
+                    onClick={() => !isDone && toggleItem(item.recurring_id)}
+                    className={`flex items-start gap-3 p-3 transition-colors
+                      ${isDone
+                        ? 'bg-muted/30 cursor-not-allowed opacity-60'
+                        : isSelected
+                          ? 'bg-primary/5 cursor-pointer hover:bg-primary/10'
+                          : 'cursor-pointer hover:bg-muted/40'
+                      }`}
+                  >
+                    <Checkbox
+                      checked={isSelected}
+                      disabled={isDone}
+                      onCheckedChange={() => !isDone && toggleItem(item.recurring_id)}
+                      className="mt-0.5 shrink-0"
+                      onClick={e => e.stopPropagation()}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-medium truncate">{item.description}</span>
+                        {isDone && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-medium text-green-700 bg-green-50 border border-green-200 rounded-full px-2 py-0.5 shrink-0">
+                            <Check className="w-2.5 h-2.5" /> Already generated
+                          </span>
+                        )}
+                      </div>
+                      {supplierName && (
+                        <p className="text-xs text-muted-foreground mt-0.5 truncate">{supplierName}</p>
+                      )}
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-sm font-semibold tabular-nums">{ZAR(amount_incl_vat)}</p>
+                      <p className="text-[10px] text-muted-foreground">
+                        {item.vat_rated ? 'incl. 15% VAT' : 'no VAT'}
+                      </p>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Summary */}
+          {selected.size > 0 && (
+            <div className="rounded-xl bg-muted/40 border p-3 space-y-1 text-sm">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Summary</p>
+              {activeItems.filter(i => selected.has(i.recurring_id)).map(item => {
+                const { amount_incl_vat } = calcVat(item.amount_excl_vat, item.vat_rated)
+                return (
+                  <div key={item.recurring_id} className="flex justify-between text-muted-foreground">
+                    <span className="truncate mr-4">{item.description}</span>
+                    <span className="tabular-nums shrink-0">{ZAR(amount_incl_vat)}</span>
+                  </div>
+                )
+              })}
+              <div className="flex justify-between font-semibold border-t pt-2 mt-1">
+                <span>{selected.size} item{selected.size !== 1 ? 's' : ''}</span>
+                <span>
+                  {ZAR(activeItems
+                    .filter(i => selected.has(i.recurring_id))
+                    .reduce((s, i) => s + calcVat(i.amount_excl_vat, i.vat_rated).amount_incl_vat, 0)
+                  )}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <p className="text-xs text-destructive flex items-center gap-1">
+              <AlertCircle className="w-3 h-3" /> {error}
+            </p>
+          )}
+
+          <div className="flex justify-end gap-2 sticky bottom-0 bg-background pb-2 sm:static sm:pb-0 sm:bg-transparent">
+            <Button variant="outline" onClick={onClose} className="flex-1 sm:flex-none">
+              Cancel
+            </Button>
+            <Button
+              onClick={handleGenerate}
+              disabled={generating || selected.size === 0 || checking}
+              className="flex-1 sm:flex-none gap-1.5"
+            >
+              {generating
+                ? <Loader2 className="w-4 h-4 animate-spin" />
+                : <Check className="w-4 h-4" />
+              }
+              Generate {selected.size > 0 ? `${selected.size} expense${selected.size !== 1 ? 's' : ''}` : ''}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 // ─── Recurring Expenses Tab ───────────────────────────────────────────────────
 function RecurringTab({ suppliers }: { suppliers: Supplier[] }) {
   const supabase = createClient()
-  const [items, setItems]             = useState<RecurringExpense[]>([])
-  const [loading, setLoading]         = useState(true)
-  const [generating, setGenerating]   = useState(false)
-  const [showAdd, setShowAdd]         = useState(false)
-  const [editItem, setEditItem]       = useState<RecurringExpense | null>(null)
+  const [items, setItems]               = useState<RecurringExpense[]>([])
+  const [loading, setLoading]           = useState(true)
+  const [showAdd, setShowAdd]           = useState(false)
+  const [editItem, setEditItem]         = useState<RecurringExpense | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<RecurringExpense | null>(null)
-  const [genResult, setGenResult]     = useState<string | null>(null)
+  const [showGenerate, setShowGenerate] = useState(false)
+  const [genResult, setGenResult]       = useState<string | null>(null)
 
   const ZAR_local = (n: number) => new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(n)
 
@@ -750,36 +1109,7 @@ function RecurringTab({ suppliers }: { suppliers: Supplier[] }) {
     await fetchItems()
   }
 
-  async function handleGenerateMonth() {
-    const now = new Date()
-    // Use current month's 1st as invoice date
-    const invoiceDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
-    const active = items.filter(i => i.is_active)
-    if (!active.length) return setGenResult('No active recurring expenses to generate.')
-    setGenerating(true)
-
-    // Check for duplicates: already generated this month?
-    const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
-    const monthEnd   = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()}`
-
-    const rows = active.map(item => ({
-      supplier_id:         item.supplier_id,
-      invoice_date:        invoiceDate,
-      product_description: item.description,
-      amount_excl_vat:     item.amount_excl_vat,
-      vat_rated:           item.vat_rated,
-    }))
-
-    const { error } = await supabase.from('vb_expense').insert(rows)
-    setGenerating(false)
-    if (error) {
-      setGenResult(`Error: ${error.message}`)
-    } else {
-      setGenResult(`Generated ${active.length} expense${active.length !== 1 ? 's' : ''} for ${now.toLocaleString('en-ZA', { month: 'long', year: 'numeric' })}.`)
-    }
-  }
-
-  const activeCount = items.filter(i => i.is_active).length
+  const activeCount  = items.filter(i => i.is_active).length
   const totalMonthly = items.filter(i => i.is_active).reduce((s, i) => {
     const { amount_incl_vat } = calcVat(i.amount_excl_vat, i.vat_rated)
     return s + amount_incl_vat
@@ -798,13 +1128,10 @@ function RecurringTab({ suppliers }: { suppliers: Supplier[] }) {
           <Button
             variant="outline" size="sm"
             className="gap-1.5"
-            onClick={handleGenerateMonth}
-            disabled={generating || activeCount === 0}
+            onClick={() => setShowGenerate(true)}
+            disabled={activeCount === 0}
           >
-            {generating
-              ? <Loader2 className="w-4 h-4 animate-spin" />
-              : <RefreshCw className="w-4 h-4" />
-            }
+            <RefreshCw className="w-4 h-4" />
             <span className="hidden sm:inline">Generate this month</span>
             <span className="sm:hidden">Generate</span>
           </Button>
@@ -925,6 +1252,18 @@ function RecurringTab({ suppliers }: { suppliers: Supplier[] }) {
         </>
       )}
 
+      {/* Generate modal */}
+      <GenerateRecurringModal
+        open={showGenerate}
+        onClose={() => setShowGenerate(false)}
+        items={items}
+        suppliers={suppliers}
+        supabase={supabase}
+        onGenerated={(count, monthLabel) =>
+          setGenResult(`Generated ${count} expense${count !== 1 ? 's' : ''} for ${monthLabel}.`)
+        }
+      />
+
       {/* Add / Edit dialog */}
       <RecurringExpenseModal
         open={showAdd}
@@ -957,100 +1296,6 @@ function RecurringTab({ suppliers }: { suppliers: Supplier[] }) {
         </AlertDialogContent>
       </AlertDialog>
     </div>
-  )
-}
-
-// ─── Recurring Expense Form Modal ─────────────────────────────────────────────
-function RecurringExpenseModal({ open, onClose, suppliers, initial, onSave }: {
-  open: boolean; onClose: () => void; suppliers: Supplier[]
-  initial?: RecurringExpense | null
-  onSave: (data: Omit<RecurringExpense, 'recurring_id' | 'vb_supplier'>, id?: number) => Promise<void>
-}) {
-  const EMPTY = { supplier_id: null as number | null, description: '', amount_excl_vat: 0, vat_rated: false, is_active: true, category: '', notes: '' }
-  const [form, setForm] = useState({ ...EMPTY })
-  const [saving, setSaving] = useState(false)
-  const [error, setError]   = useState('')
-
-  useEffect(() => {
-    if (open) {
-      setForm(initial
-        ? { supplier_id: initial.supplier_id, description: initial.description, amount_excl_vat: initial.amount_excl_vat, vat_rated: initial.vat_rated, is_active: initial.is_active, category: initial.category ?? '', notes: initial.notes ?? '' }
-        : { ...EMPTY }
-      )
-      setError('')
-    }
-  }, [open, initial])
-
-  const { vat_amount, amount_incl_vat } = calcVat(form.amount_excl_vat, form.vat_rated)
-
-  async function handleSave() {
-    if (!form.description.trim()) return setError('Description is required')
-    if (!form.amount_excl_vat || form.amount_excl_vat <= 0) return setError('Amount is required')
-    setError(''); setSaving(true)
-    await onSave({
-      supplier_id: form.supplier_id,
-      description: form.description.trim(),
-      amount_excl_vat: form.amount_excl_vat,
-      vat_rated: form.vat_rated,
-      is_active: form.is_active,
-      category: form.category.trim() || null,
-      notes: form.notes.trim() || null,
-    }, initial?.recurring_id)
-    setSaving(false); onClose()
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="w-full max-w-md h-[100dvh] sm:h-auto sm:max-h-[90vh] overflow-y-auto p-4 sm:p-6 rounded-none sm:rounded-xl">
-        <DialogHeader><DialogTitle>{initial ? 'Edit recurring expense' : 'Add recurring expense'}</DialogTitle></DialogHeader>
-        <div className="space-y-4">
-          <div className="space-y-1.5">
-            <Label>Description <span className="text-destructive">*</span></Label>
-            <Input value={form.description} placeholder="e.g. Business Insurance, Internet" onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
-          </div>
-          <div className="space-y-1.5">
-            <Label>Supplier <span className="text-muted-foreground text-xs">(optional)</span></Label>
-            <Select value={form.supplier_id ? String(form.supplier_id) : 'none'} onValueChange={v => setForm(f => ({ ...f, supplier_id: v === 'none' ? null : Number(v) }))}>
-              <SelectTrigger><SelectValue placeholder="Select supplier…" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">None / internal</SelectItem>
-                {suppliers.map(s => <SelectItem key={s.supplier_id} value={String(s.supplier_id)}>{s.company_name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label>Amount excl. VAT (R)</Label>
-              <Input type="number" inputMode="decimal" min={0} step={0.01} value={form.amount_excl_vat || ''} placeholder="0.00" onChange={e => setForm(f => ({ ...f, amount_excl_vat: parseFloat(e.target.value) || 0 }))} />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Category</Label>
-              <Input value={form.category} placeholder="e.g. Utilities, Admin" onChange={e => setForm(f => ({ ...f, category: e.target.value }))} />
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <Checkbox id="rec-vat" checked={form.vat_rated} onCheckedChange={v => setForm(f => ({ ...f, vat_rated: v === true }))} />
-            <Label htmlFor="rec-vat" className="cursor-pointer">VAT rated (15%)</Label>
-          </div>
-          <div className="flex items-center gap-2">
-            <Checkbox id="rec-active" checked={form.is_active} onCheckedChange={v => setForm(f => ({ ...f, is_active: v === true }))} />
-            <Label htmlFor="rec-active" className="cursor-pointer">Active (include when generating)</Label>
-          </div>
-          <div className="rounded-xl bg-muted/40 border p-3 space-y-1 text-sm">
-            <div className="flex justify-between text-muted-foreground"><span>Excl. VAT</span><span>{ZAR(form.amount_excl_vat)}</span></div>
-            <div className="flex justify-between text-muted-foreground"><span>VAT ({form.vat_rated ? '15%' : '0%'})</span><span>{ZAR(vat_amount)}</span></div>
-            <div className="flex justify-between font-medium border-t pt-1 mt-1"><span>Monthly total</span><span>{ZAR(amount_incl_vat)}</span></div>
-          </div>
-          {error && <p className="text-xs text-destructive flex items-center gap-1"><AlertCircle className="w-3 h-3" /> {error}</p>}
-          <div className="flex justify-end gap-2 pt-1 sticky bottom-0 bg-background pb-2 sm:static sm:pb-0 sm:bg-transparent">
-            <Button variant="outline" onClick={onClose} className="flex-1 sm:flex-none">Cancel</Button>
-            <Button onClick={handleSave} disabled={saving} className="flex-1 sm:flex-none">
-              {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}{initial ? 'Save changes' : 'Add recurring'}
-            </Button>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
   )
 }
 
@@ -1089,7 +1334,6 @@ function MarkPaidModal({
           <DialogTitle>Mark as paid</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 mt-1">
-          {/* Summary of what's being paid */}
           <div className="rounded-xl bg-muted/40 border p-3 space-y-1 text-sm">
             <div className="flex justify-between text-muted-foreground">
               <span>Supplier</span>
@@ -1105,12 +1349,10 @@ function MarkPaidModal({
               <span>{new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(Number(expense.amount_incl_vat))}</span>
             </div>
           </div>
-
           <div className="space-y-1.5">
             <Label>Date paid</Label>
             <Input type="date" value={datePaid} onChange={e => setDatePaid(e.target.value)} />
           </div>
-
           <div className="space-y-1.5">
             <Label>Notes <span className="text-muted-foreground text-xs">(optional)</span></Label>
             <Textarea
@@ -1120,7 +1362,6 @@ function MarkPaidModal({
               onChange={e => setNotes(e.target.value)}
             />
           </div>
-
           <div className="flex justify-end gap-2 pt-1">
             <Button variant="outline" onClick={onClose} className="flex-1 sm:flex-none">Cancel</Button>
             <Button
@@ -1128,10 +1369,7 @@ function MarkPaidModal({
               disabled={saving || !datePaid}
               className="flex-1 sm:flex-none gap-1.5"
             >
-              {saving
-                ? <Loader2 className="w-4 h-4 animate-spin" />
-                : <Check className="w-4 h-4" />
-              }
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
               Confirm payment
             </Button>
           </div>
@@ -1215,8 +1453,7 @@ function ExpenseCard({ expense, onMarkPaid }: { expense: Expense; onMarkPaid: (e
           <p className="text-sm font-semibold tabular-nums">{ZAR(Number(expense.amount_incl_vat))}</p>
           {!isPaid && (
             <Button
-              size="sm"
-              variant="outline"
+              size="sm" variant="outline"
               className="h-7 text-xs gap-1 border-green-300 text-green-700 hover:bg-green-50"
               onClick={() => onMarkPaid(expense)}
             >
@@ -1284,7 +1521,6 @@ function AnalysisTab({ expenses }: { expenses: AnalyticsExpense[] }) {
     return [{ name: 'VAT rated (15%)', value: Math.round(vatTotal) }, { name: 'Zero rated (0%)', value: Math.round(nonVatTotal) }]
   }, [expenses])
 
-  // Payment status
   const paymentStats = useMemo(() => {
     let paid = 0, unpaid = 0
     for (const e of expenses) {
@@ -1307,6 +1543,9 @@ function AnalysisTab({ expenses }: { expenses: AnalyticsExpense[] }) {
     return totalIncl > 0 ? (top3Total / totalIncl) * 100 : 0
   }, [supplierData, totalIncl])
 
+  // suppress unused warning
+  void totalVat
+
   if (expenses.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
@@ -1325,7 +1564,6 @@ function AnalysisTab({ expenses }: { expenses: AnalyticsExpense[] }) {
         <KpiCard label="Top 3 Supplier Share" value={`${top3Share.toFixed(1)}%`} sub={topSupplier ? topSupplier.name : '—'} accentColor={BRAND.sage} />
       </div>
 
-      {/* Monthly trend + VAT split */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 bg-card border border-border rounded-2xl p-5">
           <div className="mb-4">
@@ -1376,7 +1614,6 @@ function AnalysisTab({ expenses }: { expenses: AnalyticsExpense[] }) {
         </div>
       </div>
 
-      {/* Payment status */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         {[
           { label: 'Total paid', value: paymentStats.paid, color: BRAND.sage, pct: totalIncl > 0 ? paymentStats.paid / totalIncl : 0 },
@@ -1393,7 +1630,6 @@ function AnalysisTab({ expenses }: { expenses: AnalyticsExpense[] }) {
         ))}
       </div>
 
-      {/* Top 10 suppliers */}
       <div className="bg-card border border-border rounded-2xl p-5">
         <div className="flex items-start justify-between mb-5 gap-4 flex-wrap">
           <div>
@@ -1471,11 +1707,8 @@ export default function ExpensesPage() {
   const [activeTab, setActiveTab]   = useState<'expenses' | 'analysis' | 'recurring' | 'vendors' | 'employees'>('expenses')
   const [allExpenses, setAllExpenses] = useState<AnalyticsExpense[]>([])
 
-  // Vendor modal state
   const [vendorModalOpen, setVendorModalOpen] = useState(false)
   const [editingVendor, setEditingVendor]     = useState<Supplier | null>(null)
-
-  // Mark paid modal state
   const [markPaidExpense, setMarkPaidExpense] = useState<Expense | null>(null)
 
   const now = new Date()
@@ -1494,7 +1727,6 @@ export default function ExpensesPage() {
   const yearOptions = Array.from({ length: 6 }, (_, i) => String(now.getFullYear() - 2 + i))
   const fyOptions   = Array.from({ length: 5 }, (_, i) => { const y = now.getFullYear() - 2 + i; return `${y}/${y + 1}` })
 
-  // ── Fetch suppliers ───────────────────────────────────────────────────────
   const fetchSuppliers = useCallback(async () => {
     const { data } = await supabase.from('vb_supplier')
       .select('supplier_id, company_name, address, phone_number, tax_number, vat_number, vat_registered, account_number, payment_terms, notes')
@@ -1504,7 +1736,6 @@ export default function ExpensesPage() {
 
   useEffect(() => { fetchSuppliers() }, [fetchSuppliers])
 
-  // ── Shared filter builder ─────────────────────────────────────────────────
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function applyFilters(q: any) {
     if (filterFY !== 'all') {
@@ -1573,7 +1804,6 @@ export default function ExpensesPage() {
   async function insertExpenses(rows: ExpenseRow[]) { await supabase.from('vb_expense').insert(rows); await refreshAll() }
   async function insertOne(row: ExpenseRow)         { await supabase.from('vb_expense').insert([row]); await refreshAll() }
 
-  // ── Vendor CRUD ───────────────────────────────────────────────────────────
   async function handleSaveVendor(data: SupplierForm, id?: number) {
     if (id) await supabase.from('vb_supplier').update(data).eq('supplier_id', id)
     else    await supabase.from('vb_supplier').insert([data])
@@ -1584,7 +1814,6 @@ export default function ExpensesPage() {
     await fetchSuppliers()
   }
 
-  // ── Mark as paid ──────────────────────────────────────────────────────────
   async function handleMarkPaid(expenseId: number, datePaid: string, notes: string) {
     await supabase.from('vb_expense')
       .update({ date_paid: datePaid, ...(notes.trim() ? { notes } : {}) })
@@ -1597,7 +1826,6 @@ export default function ExpensesPage() {
   const hasActiveFilters = filterMonth !== 'all' || filterFY !== 'all' || filterSupplier !== 'all' || filterVat !== 'all' || filterPaid !== 'all' || !!filterDescription.trim()
   const activeFilterCount = [filterMonth !== 'all', filterFY !== 'all', filterSupplier !== 'all', filterVat !== 'all', filterPaid !== 'all', !!filterDescription.trim()].filter(Boolean).length
 
-  // ── Desktop filter selects config ─────────────────────────────────────────
   const desktopFilters = [
     { value: filterYear,     onChange: (v: string) => { setFilterFY('all'); setFilterYear(v) },     w: 'w-28', placeholder: 'Year',      opts: [{ v: 'all', l: 'All years' },     ...yearOptions.map(y  => ({ v: y,          l: y }))] },
     { value: filterMonth,    onChange: (v: string) => { setFilterFY('all'); setFilterMonth(v) },    w: 'w-32', placeholder: 'Month',     opts: [{ v: 'all', l: 'All months' },    ...MONTHS.map(m       => ({ v: m,          l: m }))] },
@@ -1609,7 +1837,6 @@ export default function ExpensesPage() {
 
   const FilterBar = (
     <div className="space-y-2">
-      {/* Description search — always visible */}
       <div className="relative">
         <Input
           className="h-8 text-xs pl-3 pr-7"
@@ -1626,8 +1853,6 @@ export default function ExpensesPage() {
           </button>
         )}
       </div>
-
-      {/* Mobile selects trigger */}
       <div className="flex items-center gap-2 sm:hidden">
         <Button variant="outline" size="sm" className="h-9 gap-1.5 flex-1" onClick={() => setShowFilters(true)}>
           <SlidersHorizontal className="w-3.5 h-3.5" /> Filters
@@ -1636,8 +1861,6 @@ export default function ExpensesPage() {
         {hasActiveFilters && <Button variant="ghost" size="sm" className="h-9 text-xs" onClick={clearFilters}><X className="w-3 h-3 mr-1" /> Clear</Button>}
         <span className="ml-auto text-xs text-muted-foreground shrink-0">{total} record{total !== 1 ? 's' : ''}</span>
       </div>
-
-      {/* Desktop selects */}
       <div className="hidden sm:flex flex-wrap items-center gap-2">
         {desktopFilters.map(({ value, onChange, w, placeholder, opts }) => (
           <Select key={placeholder} value={value} onValueChange={onChange}>
@@ -1654,7 +1877,6 @@ export default function ExpensesPage() {
   return (
     <div className="max-w-7xl mx-auto px-4 lg:px-8 py-6 sm:py-8 space-y-5 sm:space-y-6">
 
-      {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-xl sm:text-2xl font-semibold tracking-tight">Expenses</h1>
@@ -1672,7 +1894,6 @@ export default function ExpensesPage() {
         </div>
       </div>
 
-      {/* Summary cards — now 4: added Amount to Pay */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[
           { label: 'Total excl. VAT', value: summary.excl,   color: BRAND.caramel },
@@ -1688,7 +1909,6 @@ export default function ExpensesPage() {
         ))}
       </div>
 
-      {/* Tabs */}
       <Tabs value={activeTab} onValueChange={v => setActiveTab(v as typeof activeTab)}>
         <TabsList className="h-9 rounded-xl bg-muted p-1">
           <TabsTrigger value="expenses" className="rounded-lg text-xs gap-1.5 px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">
@@ -1708,7 +1928,6 @@ export default function ExpensesPage() {
           </TabsTrigger>
         </TabsList>
 
-        {/* ── Expenses tab ── */}
         <TabsContent value="expenses" className="mt-5 space-y-4">
           {FilterBar}
           <div className="hidden sm:block rounded-xl border overflow-hidden">
@@ -1755,8 +1974,7 @@ export default function ExpensesPage() {
                         </span>
                       ) : (
                         <Button
-                          size="sm"
-                          variant="outline"
+                          size="sm" variant="outline"
                           className="h-7 text-xs gap-1 border-green-300 text-green-700 hover:bg-green-50 whitespace-nowrap"
                           onClick={() => setMarkPaidExpense(e)}
                         >
@@ -1789,18 +2007,15 @@ export default function ExpensesPage() {
           )}
         </TabsContent>
 
-        {/* ── Analysis tab ── */}
         <TabsContent value="analysis" className="mt-5 space-y-4">
           {FilterBar}
           <AnalysisTab expenses={allExpenses} />
         </TabsContent>
 
-        {/* ── Recurring tab ── */}
         <TabsContent value="recurring" className="mt-5">
           <RecurringTab suppliers={suppliers} />
         </TabsContent>
 
-        {/* ── Vendors tab ── */}
         <TabsContent value="vendors" className="mt-5">
           <VendorsTab
             suppliers={suppliers}
@@ -1810,13 +2025,11 @@ export default function ExpensesPage() {
           />
         </TabsContent>
 
-        {/* ── Employees tab — self-contained component ── */}
         <TabsContent value="employees" className="mt-5">
           <EmployeesTab />
         </TabsContent>
       </Tabs>
 
-      {/* Modals */}
       <UploadModal open={showUpload} onClose={() => setShowUpload(false)} suppliers={suppliers} onImport={insertExpenses} />
       <AddExpenseModal open={showAdd} onClose={() => setShowAdd(false)} suppliers={suppliers} onSave={insertOne} />
       <VendorModal open={vendorModalOpen} onClose={() => setVendorModalOpen(false)} initial={editingVendor} onSave={handleSaveVendor} />
