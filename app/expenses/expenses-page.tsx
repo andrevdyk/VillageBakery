@@ -40,7 +40,7 @@ import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Textarea } from '@/components/ui/textarea'
 import * as XLSX from 'xlsx'
-import { StockTab } from './stock-tab'
+import { StockTab } from '../stock/stock-tab'
 
 // ─── Brand colours ────────────────────────────────────────────────────────────
 const BRAND = {
