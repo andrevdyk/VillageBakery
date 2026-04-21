@@ -7,18 +7,16 @@ import { CuriosExportButton } from '@/components/curios-export-button'
 import { SellerPaymentsPanel } from '@/components/seller-payments-panel'
 import { SheetEditModal } from '@/components/sheet-edit-modal'
 import Link from 'next/link'
+import type { CuriosSheet, CurioEntry, Seller } from '@/lib/schema'
 import { calcCuriosCommissions } from '@/lib/calc'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
   PieChart, Pie, Legend,
 } from 'recharts'
-import type { CuriosSheet, Seller, CurioEntry } from '@/lib/schema'
 
 type Tab = 'scan' | 'overview' | 'daily' | 'payments'
 type Preset = 'all' | 'this_week' | 'this_month' | 'last_month' | 'custom'
 
-
-// Then update Props to use CurioEntry:
 interface Props {
   sellers: Seller[]
   sheets: CuriosSheet[]
@@ -40,6 +38,36 @@ interface Props {
 }
 
 const R = (v: number) => `R${v.toFixed(2)}`
+
+// ─── Date helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Formats any stored date string as "14 April 2026".
+ * Handles yyyy-mm-dd, dd/mm/yyyy, and ISO timestamps.
+ */
+function formatDisplayDate(raw: string | null | undefined): string {
+  if (!raw) return 'Undated'
+  let d: Date
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    // Parse as local date to avoid UTC-offset shifting the day
+    const [y, m, day] = raw.split('-').map(Number)
+    d = new Date(y, m - 1, day)
+  } else if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(raw)) {
+    const [day, m, y] = raw.split('/').map(Number)
+    d = new Date(y, m - 1, day)
+  } else {
+    d = new Date(raw)
+  }
+
+  if (isNaN(d.getTime())) return raw
+
+  return d.toLocaleDateString('en-ZA', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  })
+}
 
 function getPresetRange(preset: Preset): { from: Date | null; to: Date | null } {
   const now = new Date()
@@ -69,8 +97,10 @@ function getPresetRange(preset: Preset): { from: Date | null; to: Date | null } 
 
 function sheetDate(sheet: CuriosSheet): Date {
   if (sheet.sheet_date) {
-    const d = new Date(sheet.sheet_date)
-    if (!isNaN(d.getTime())) return d
+    if (/^\d{4}-\d{2}-\d{2}$/.test(sheet.sheet_date)) {
+      const [y, m, d] = sheet.sheet_date.split('-').map(Number)
+      return new Date(y, m - 1, d)
+    }
     const parts = sheet.sheet_date.split('/')
     if (parts.length === 3) {
       return new Date(`${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`)
@@ -443,7 +473,9 @@ export function CuriosDashboard({ sellers, sheets, payments, onUpdateSheet }: Pr
                     className="flex items-center justify-between bg-card rounded-xl border border-border px-4 py-3 hover:border-accent/50 transition-colors"
                   >
                     <div className="min-w-0">
-                      <p className="text-sm font-semibold text-foreground">{sheet.sheet_date ?? 'Undated'}</p>
+                      <p className="text-sm font-semibold text-foreground">
+                        {formatDisplayDate(sheet.sheet_date)}
+                      </p>
                       <p className="text-xs text-muted-foreground">{entries.length} entries</p>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
@@ -508,10 +540,12 @@ export function CuriosDashboard({ sellers, sheets, payments, onUpdateSheet }: Pr
                   >
                     <div className="flex items-start justify-between">
                       <div>
-                        <p className="font-serif font-semibold text-foreground">{sheet.sheet_date ?? 'Undated'}</p>
+                        <p className="font-serif font-semibold text-foreground">
+                          {formatDisplayDate(sheet.sheet_date)}
+                        </p>
                         <p className="text-xs text-muted-foreground mt-0.5">
                           {entries.length} {entries.length === 1 ? 'entry' : 'entries'} &middot;{' '}
-                          {new Date(sheet.created_at).toLocaleDateString('en-ZA')}
+                          {formatDisplayDate(sheet.created_at)}
                         </p>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
