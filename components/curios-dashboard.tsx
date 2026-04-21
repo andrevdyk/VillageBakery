@@ -5,21 +5,38 @@ import { CuriosScanner } from '@/components/curios-scanner'
 import { SellersManager } from '@/components/sellers-manager'
 import { CuriosExportButton } from '@/components/curios-export-button'
 import { SellerPaymentsPanel } from '@/components/seller-payments-panel'
+import { SheetEditModal } from '@/components/sheet-edit-modal'
 import Link from 'next/link'
-import type { CuriosSheet, Seller } from '@/lib/schema'
 import { calcCuriosCommissions } from '@/lib/calc'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
   PieChart, Pie, Legend,
 } from 'recharts'
+import type { CuriosSheet, Seller, CurioEntry } from '@/lib/schema'
 
 type Tab = 'scan' | 'overview' | 'daily' | 'payments'
 type Preset = 'all' | 'this_week' | 'this_month' | 'last_month' | 'custom'
 
+
+// Then update Props to use CurioEntry:
 interface Props {
   sellers: Seller[]
   sheets: CuriosSheet[]
-  payments: Array<{ id: string; seller_id: string; payment_date: string; amount: number; transaction_number: string | null; notes: string | null; period_start: string | null; period_end: string | null; curios_sellers?: { name: string; display_name: string | null } }>
+  payments: Array<{
+    id: string
+    seller_id: string
+    payment_date: string
+    amount: number
+    transaction_number: string | null
+    notes: string | null
+    period_start: string | null
+    period_end: string | null
+    curios_sellers?: { name: string; display_name: string | null }
+  }>
+  onUpdateSheet?: (
+    id: string,
+    data: { sheet_date?: string; entries?: CurioEntry[]; notes?: string }
+  ) => Promise<{ error?: string; existingDate?: string } | void>
 }
 
 const R = (v: number) => `R${v.toFixed(2)}`
@@ -28,7 +45,7 @@ function getPresetRange(preset: Preset): { from: Date | null; to: Date | null } 
   const now = new Date()
   if (preset === 'all') return { from: null, to: null }
   if (preset === 'this_week') {
-    const day = now.getDay() // 0 = Sunday
+    const day = now.getDay()
     const from = new Date(now)
     from.setDate(now.getDate() - day)
     from.setHours(0, 0, 0, 0)
@@ -51,12 +68,9 @@ function getPresetRange(preset: Preset): { from: Date | null; to: Date | null } 
 }
 
 function sheetDate(sheet: CuriosSheet): Date {
-  // prefer explicit sheet_date, fall back to created_at
   if (sheet.sheet_date) {
-    // handles both "2026-04-01" and "01/04/2026" formats
     const d = new Date(sheet.sheet_date)
     if (!isNaN(d.getTime())) return d
-    // try dd/mm/yyyy
     const parts = sheet.sheet_date.split('/')
     if (parts.length === 3) {
       return new Date(`${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`)
@@ -65,11 +79,26 @@ function sheetDate(sheet: CuriosSheet): Date {
   return new Date(sheet.created_at)
 }
 
-export function CuriosDashboard({ sellers, sheets, payments }: Props) {
+function EditButton({ onClick }: { onClick: (e: React.MouseEvent) => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title="Edit sheet"
+      className="shrink-0 flex items-center gap-1 text-[10px] font-semibold text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-lg hover:bg-muted"
+    >
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3">
+        <path d="M11.013 2.513a1.75 1.75 0 0 1 2.475 2.474L6.226 12.25a2.751 2.751 0 0 1-.892.58l-2.18.818a.75.75 0 0 1-.965-.965l.818-2.18a2.75 2.75 0 0 1 .58-.892l7.426-7.098Z" />
+      </svg>
+      Edit
+    </button>
+  )
+}
+
+export function CuriosDashboard({ sellers, sheets, payments, onUpdateSheet }: Props) {
   const [tab, setTab] = useState<Tab>('scan')
   const [searchDate, setSearchDate] = useState('')
+  const [editingSheet, setEditingSheet] = useState<CuriosSheet | null>(null)
 
-  // ── Date filter state ──
   const [preset, setPreset] = useState<Preset>('all')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
@@ -83,7 +112,6 @@ export function CuriosDashboard({ sellers, sheets, payments }: Props) {
     return getPresetRange(preset)
   }, [preset, customFrom, customTo])
 
-  // Sheets filtered by date period
   const periodSheets = useMemo(() => {
     const { from, to } = activeDateRange
     if (!from && !to) return sheets
@@ -95,7 +123,6 @@ export function CuriosDashboard({ sellers, sheets, payments }: Props) {
     })
   }, [sheets, activeDateRange])
 
-  // Payments filtered by date period
   const periodPayments = useMemo(() => {
     const { from, to } = activeDateRange
     if (!from && !to) return payments
@@ -107,7 +134,6 @@ export function CuriosDashboard({ sellers, sheets, payments }: Props) {
     })
   }, [payments, activeDateRange])
 
-  // ── Overview stats across filtered sheets ──
   const overallStats = useMemo(() => {
     let totalSales = 0
     let totalSellerPayout = 0
@@ -147,7 +173,6 @@ export function CuriosDashboard({ sellers, sheets, payments }: Props) {
     }
   }, [periodSheets, sellers])
 
-  // ── Best selling products ──
   const topProducts = useMemo(() => {
     const productMap = new Map<string, number>()
     for (const sheet of periodSheets) {
@@ -166,7 +191,6 @@ export function CuriosDashboard({ sellers, sheets, payments }: Props) {
   const CHART_COLORS = ['#8B6F4E', '#C4956A', '#D4A76A', '#E8C99A', '#F5E0C0', '#A0856B', '#6B5344', '#B8956A']
 
   const filteredSheets = useMemo(() => {
-    // Daily tab: apply both date period AND text search
     let result = periodSheets
     if (searchDate) {
       result = result.filter((s) => {
@@ -195,8 +219,26 @@ export function CuriosDashboard({ sellers, sheets, payments }: Props) {
 
   const isFiltered = preset !== 'all'
 
+  const openEdit = (sheet: CuriosSheet, e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setEditingSheet(sheet)
+  }
+
   return (
     <div className="max-w-7xl mx-auto px-4 lg:px-8 py-5 pb-12">
+
+      {/* Edit modal */}
+      {editingSheet && (
+        <SheetEditModal
+          sheet={editingSheet}
+          sellers={sellers}
+          open={!!editingSheet}
+          onClose={() => setEditingSheet(null)}
+          onSave={onUpdateSheet ?? (async () => {})}
+        />
+      )}
+
       {/* Sub-nav tabs */}
       <nav className="flex gap-1 bg-muted rounded-xl p-1 mb-4 max-w-sm">
         {tabs.map((t) => (
@@ -216,7 +258,6 @@ export function CuriosDashboard({ sellers, sheets, payments }: Props) {
 
       {/* ── DATE FILTER BAR ── */}
       <div className="bg-card border border-border rounded-xl p-3 mb-6 space-y-3">
-        {/* Preset pills */}
         <div className="flex flex-wrap gap-1.5">
           {presets.map((p) => (
             <button
@@ -238,7 +279,6 @@ export function CuriosDashboard({ sellers, sheets, payments }: Props) {
           )}
         </div>
 
-        {/* Custom range inputs */}
         {preset === 'custom' && (
           <div className="flex flex-wrap gap-2 items-center">
             <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -284,7 +324,6 @@ export function CuriosDashboard({ sellers, sheets, payments }: Props) {
             <p className="text-xs text-muted-foreground mt-0.5">{periodSheets.length} sheets {isFiltered ? 'in period' : 'on record'}</p>
           </div>
 
-          {/* Summary cards */}
           <div className="grid grid-cols-3 gap-3">
             <div className="bg-card rounded-xl border border-border p-3 text-center">
               <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">Total Sales</p>
@@ -300,7 +339,6 @@ export function CuriosDashboard({ sellers, sheets, payments }: Props) {
             </div>
           </div>
 
-          {/* Revenue split + Sales by seller */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {overallStats.totalSales > 0 && (
               <section className="bg-card rounded-xl border border-border p-4">
@@ -330,7 +368,10 @@ export function CuriosDashboard({ sellers, sheets, payments }: Props) {
               <section className="bg-card rounded-xl border border-border p-4">
                 <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-4">Sales by Seller</p>
                 <ResponsiveContainer width="100%" height={200}>
-                  <BarChart data={overallStats.sellerTotals.map((s) => ({ name: s.display_name || s.name, total: s.total }))} margin={{ top: 0, right: 4, left: -16, bottom: 0 }}>
+                  <BarChart
+                    data={overallStats.sellerTotals.map((s) => ({ name: s.display_name || s.name, total: s.total }))}
+                    margin={{ top: 0, right: 4, left: -16, bottom: 0 }}
+                  >
                     <XAxis dataKey="name" tick={{ fontSize: 10 }} />
                     <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `R${v}`} />
                     <Tooltip formatter={(v: number) => `R${v.toFixed(2)}`} />
@@ -345,7 +386,6 @@ export function CuriosDashboard({ sellers, sheets, payments }: Props) {
             )}
           </div>
 
-          {/* Best selling products + Per-seller breakdown */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {topProducts.length > 0 && (
               <section className="bg-card rounded-xl border border-border p-4">
@@ -388,7 +428,6 @@ export function CuriosDashboard({ sellers, sheets, payments }: Props) {
             )}
           </div>
 
-          {/* All sheets list */}
           {periodSheets.length > 0 && (
             <section className="space-y-2">
               <div className="flex items-center justify-between">
@@ -399,17 +438,26 @@ export function CuriosDashboard({ sellers, sheets, payments }: Props) {
                 const entries = sheet.entries ?? []
                 const total = entries.reduce((s, e) => s + (e.amount ?? 0), 0)
                 return (
-                  <Link
+                  <div
                     key={sheet.id}
-                    href={`/curios/${sheet.id}`}
                     className="flex items-center justify-between bg-card rounded-xl border border-border px-4 py-3 hover:border-accent/50 transition-colors"
                   >
-                    <div>
+                    <div className="min-w-0">
                       <p className="text-sm font-semibold text-foreground">{sheet.sheet_date ?? 'Undated'}</p>
                       <p className="text-xs text-muted-foreground">{entries.length} entries</p>
                     </div>
-                    <p className="text-sm font-bold text-primary">{R(total)}</p>
-                  </Link>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <p className="text-sm font-bold text-primary">{R(total)}</p>
+                      {onUpdateSheet && <EditButton onClick={(e) => openEdit(sheet, e)} />}
+                      <Link
+                        href={`/curios/${sheet.id}`}
+                        className="text-[10px] font-semibold text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-lg bg-muted hover:bg-muted/80"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        View →
+                      </Link>
+                    </div>
+                  </div>
                 )
               })}
             </section>
@@ -454,10 +502,9 @@ export function CuriosDashboard({ sellers, sheets, payments }: Props) {
                 const totalPayout = commissions.reduce((s, c) => s + c.seller_payout, 0)
                 const totalBakery = commissions.reduce((s, c) => s + c.bakery_keeps, 0)
                 return (
-                  <Link
+                  <div
                     key={sheet.id}
-                    href={`/curios/${sheet.id}`}
-                    className="block bg-card rounded-xl border border-border p-4 hover:border-accent/50 transition-colors"
+                    className="bg-card rounded-xl border border-border p-4 hover:border-accent/50 transition-colors"
                   >
                     <div className="flex items-start justify-between">
                       <div>
@@ -467,7 +514,16 @@ export function CuriosDashboard({ sellers, sheets, payments }: Props) {
                           {new Date(sheet.created_at).toLocaleDateString('en-ZA')}
                         </p>
                       </div>
-                      <p className="font-bold text-primary text-sm">{R(total)}</p>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <p className="font-bold text-primary text-sm">{R(total)}</p>
+                        {onUpdateSheet && <EditButton onClick={(e) => openEdit(sheet, e)} />}
+                        <Link
+                          href={`/curios/${sheet.id}`}
+                          className="text-[10px] font-semibold text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-lg bg-muted hover:bg-muted/80"
+                        >
+                          View →
+                        </Link>
+                      </div>
                     </div>
                     <div className="flex gap-3 mt-3 pt-3 border-t border-border/60">
                       <div className="flex-1 text-center">
@@ -480,7 +536,7 @@ export function CuriosDashboard({ sellers, sheets, payments }: Props) {
                         <p className="text-sm font-bold text-primary">{R(totalBakery)}</p>
                       </div>
                     </div>
-                  </Link>
+                  </div>
                 )
               })}
             </div>
