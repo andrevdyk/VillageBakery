@@ -105,6 +105,95 @@ interface Payslip {
   vb_employee?: { full_name: string } | null
 }
 
+// ─── Employee (for birthday & PAYE lookups) ──────────────────────────────────
+interface Employee {
+  employee_id: number
+  full_name: string
+  id_number: string | null
+  job_position: string | null
+  is_active: boolean
+}
+
+// ─── PAYE Tax Table (hardcoded — SARS 2025/2026) ─────────────────────────────
+// Monthly remuneration brackets → monthly PAYE (under-65 column only)
+// Weekly payslips = no PAYE. Monthly payslips = check table.
+// If remuneration < lowest bracket (R8,111) → PAYE = 0
+const PAYE_TABLE: Array<{ from: number; to: number; under65: number; age65to74: number; age75plus: number }> = [
+  { from: 8111, to: 8211,  under65: 0,   age65to74: 0, age75plus: 0 },
+  { from: 8212, to: 8312,  under65: 2,   age65to74: 0, age75plus: 0 },
+  { from: 8313, to: 8413,  under65: 20,  age65to74: 0, age75plus: 0 },
+  { from: 8414, to: 8514,  under65: 39,  age65to74: 0, age75plus: 0 },
+  { from: 8515, to: 8615,  under65: 57,  age65to74: 0, age75plus: 0 },
+  { from: 8616, to: 8716,  under65: 75,  age65to74: 0, age75plus: 0 },
+  { from: 8717, to: 8817,  under65: 93,  age65to74: 0, age75plus: 0 },
+  { from: 8818, to: 8918,  under65: 111, age65to74: 0, age75plus: 0 },
+  { from: 8919, to: 9019,  under65: 129, age65to74: 0, age75plus: 0 },
+  { from: 9020, to: 9120,  under65: 148, age65to74: 0, age75plus: 0 },
+  { from: 9121, to: 9221,  under65: 166, age65to74: 0, age75plus: 0 },
+  { from: 9222, to: 9322,  under65: 184, age65to74: 0, age75plus: 0 },
+  { from: 9323, to: 9423,  under65: 202, age65to74: 0, age75plus: 0 },
+  { from: 9424, to: 9524,  under65: 220, age65to74: 0, age75plus: 0 },
+  { from: 9525, to: 9625,  under65: 238, age65to74: 0, age75plus: 0 },
+  { from: 9626, to: 9726,  under65: 257, age65to74: 0, age75plus: 0 },
+  { from: 9727, to: 9827,  under65: 275, age65to74: 0, age75plus: 0 },
+  { from: 9828, to: 9928,  under65: 293, age65to74: 0, age75plus: 0 },
+]
+
+// ── Parse birth date from SA ID number (first 6 digits = YYMMDD) ──
+function birthDateFromId(idNumber: string | null): Date | null {
+  if (!idNumber || idNumber.length < 6) return null
+  const yy = parseInt(idNumber.slice(0, 2), 10)
+  const mm = parseInt(idNumber.slice(2, 4), 10) - 1   // 0-indexed
+  const dd = parseInt(idNumber.slice(4, 6), 10)
+  if (isNaN(yy) || isNaN(mm) || isNaN(dd)) return null
+  // SA IDs: 00–24 = 2000s, 25–99 = 1900s
+  const fullYear = yy <= 24 ? 2000 + yy : 1900 + yy
+  const d = new Date(fullYear, mm, dd)
+  return isNaN(d.getTime()) ? null : d
+}
+
+// ── Age in years at a given reference date ──
+function ageAtDate(birthDate: Date, refDate: Date): number {
+  let age = refDate.getFullYear() - birthDate.getFullYear()
+  const m = refDate.getMonth() - birthDate.getMonth()
+  if (m < 0 || (m === 0 && refDate.getDate() < birthDate.getDate())) age--
+  return age
+}
+
+// ── Look up monthly PAYE based on remuneration and age ──
+// Returns 0 if weekly payslip, or if remuneration is below the threshold
+function lookupPaye(monthlyRemuneration: number, ageYears: number): number {
+  const row = PAYE_TABLE.find(r => monthlyRemuneration >= r.from && monthlyRemuneration <= r.to)
+  if (!row) return 0  // below lowest bracket or above highest (extend table as needed)
+  if (ageYears >= 75) return row.age75plus
+  if (ageYears >= 65) return row.age65to74
+  return row.under65
+}
+
+// ── Calculate PAYE for a payslip ──
+// Only monthly payslips qualify; weekly = 0
+function calcPayslipPaye(
+  totalEarnings: number,
+  payslipType: string | null,
+  employeeBirthDate: Date | null,
+  payDate: string | null,
+): number {
+  if (payslipType !== 'monthly') return 0
+  if (!employeeBirthDate) return 0
+  const ref = payDate ? new Date(payDate) : new Date()
+  const age = ageAtDate(employeeBirthDate, ref)
+  return lookupPaye(totalEarnings, age)
+}
+
+// ── Birthday utilities ──
+// Returns how many days until an employee's next birthday (0 = today)
+function daysUntilBirthday(birthDate: Date, today: Date): number {
+  const thisYear = new Date(today.getFullYear(), birthDate.getMonth(), birthDate.getDate())
+  if (thisYear < today) thisYear.setFullYear(today.getFullYear() + 1)
+  const diff = thisYear.getTime() - today.getTime()
+  return Math.floor(diff / (1000 * 60 * 60 * 24))
+}
+
 // ─── Formatters ───────────────────────────────────────────────────────────────
 const ZAR = (n: number | null | undefined) =>
   n == null ? '—' : new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(n)
@@ -248,6 +337,7 @@ export default function BusinessDashboard() {
   const [expenses,     setExpenses]     = useState<Expense[]>([])
   const [retailCounts, setRetailCounts] = useState<RetailCount[]>([])
   const [payslips,     setPayslips]     = useState<Payslip[]>([])
+  const [employees,    setEmployees]    = useState<Employee[]>([])
   const [loading,      setLoading]      = useState(true)
   const [lastRefresh,  setLastRefresh]  = useState(new Date())
 
@@ -272,17 +362,18 @@ export default function BusinessDashboard() {
   // ── Fetch ──
   const fetchAll = useCallback(async () => {
     setLoading(true)
-    const [sheets, exps, counts, slips] = await Promise.all([
+    const [sheets, exps, counts, slips, emps] = await Promise.all([
       supabase.from('cash_up_sheets').select('*').order('sheet_date', { ascending: false }),
       supabase.from('vb_expense').select('*, vb_supplier(company_name)'),
       supabase.from('vb_retail_stock_count_enriched').select('*'),
-      // ── Fetch paye field too ──
       supabase.from('vb_payslip').select('*, vb_employee(full_name)'),
+      supabase.from('vb_employee').select('employee_id, full_name, id_number, job_position, is_active'),
     ])
     setCashUpSheets((sheets.data as CashUpSheet[]) ?? [])
     setExpenses((exps.data as Expense[]) ?? [])
     setRetailCounts((counts.data as RetailCount[]) ?? [])
     setPayslips((slips.data as Payslip[]) ?? [])
+    setEmployees((emps.data as Employee[]) ?? [])
     setLoading(false)
     setLastRefresh(new Date())
   }, [])
@@ -365,11 +456,24 @@ export default function BusinessDashboard() {
     //    Total employer labour cost = nett_pay + paye + uif_employee + uif_employer
     //    (Gross cost to company, not just take-home)
     // ══════════════════════════════════════════════════════════════════════════
+    // Build employee birth date map for PAYE calculations
+    const empBdMap = new Map<number, Date | null>()
+    for (const e of employees) {
+      empBdMap.set(e.employee_id, birthDateFromId(e.id_number))
+    }
+
     const nettPayTotal      = filteredPayslips.reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
-    const payeTotal         = filteredPayslips.reduce((s, p) => s + Number(p.paye ?? 0), 0)
     const uifEmployeeTotal  = filteredPayslips.reduce((s, p) => s + Number(p.uif_employee ?? 0), 0)
     const uifEmployerTotal  = filteredPayslips.reduce((s, p) => s + Number(p.uif_employer ?? 0), 0)
     const grossEarningsTotal = filteredPayslips.reduce((s, p) => s + Number(p.total_earnings ?? 0), 0)
+    // PAYE: compute from tax table for monthly payslips using employee birth date
+    const payeTotal = filteredPayslips.reduce((s, p) => {
+      if (p.payslip_type !== 'monthly') return s
+      // Use stored value if > 0 (already calculated and saved), else compute from table
+      if (Number(p.paye ?? 0) > 0) return s + Number(p.paye)
+      const bd = empBdMap.get(p.employee_id) ?? null
+      return s + calcPayslipPaye(Number(p.total_earnings ?? 0), p.payslip_type, bd, p.pay_date ?? p.period_to)
+    }, 0)
     // Total employee cost for P&L = gross earnings (what employee earns before deductions)
     // = nett_pay + paye + uif_employee  (employer also pays uif_employer on top)
     const totalWageCosts    = nettPayTotal + payeTotal + uifEmployeeTotal  // gross cost on income statement
@@ -425,7 +529,7 @@ export default function BusinessDashboard() {
       sheetCount: filteredSheets.length,
       avgDailyRevenue: filteredSheets.length > 0 ? zRevenue / filteredSheets.length : 0,
     }
-  }, [filteredSheets, filteredExpenses, filteredCounts, filteredPayslips])
+  }, [filteredSheets, filteredExpenses, filteredCounts, filteredPayslips, employees])
 
   // ── Monthly trend data ──
   const monthlyTrend = useMemo(() => {
@@ -538,31 +642,84 @@ export default function BusinessDashboard() {
     }).sort((a, b) => b.revenue - a.revenue)
   }, [filteredCounts])
 
-  // ── Employee cost breakdown ──
+  // ── Birthday notices (upcoming within 7 days) ──
+  const upcomingBirthdays = useMemo(() => {
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    return employees
+      .filter(e => e.is_active && e.id_number)
+      .map(e => {
+        const bd = birthDateFromId(e.id_number)
+        if (!bd) return null
+        const days = daysUntilBirthday(bd, today)
+        const age  = ageAtDate(bd, today) + (days === 0 ? 0 : 1) // turning age
+        return { employee_id: e.employee_id, full_name: e.full_name, job_position: e.job_position, days, age, bd }
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null && x.days <= 7)
+      .sort((a, b) => a.days - b.days)
+  }, [employees])
+
+  // ── Employee cost breakdown (PAYE calculated from tax table) ──
   const employeeBreakdown = useMemo(() => {
-    const map = new Map<string, { nett: number; paye: number; uifEmp: number; uifEmr: number; gross: number }>()
+    // Build a lookup: employee_id → { birthDate, name, jobPosition }
+    const empMap = new Map<number, { birthDate: Date | null; name: string; jobPosition: string | null }>()
+    for (const e of employees) {
+      empMap.set(e.employee_id, {
+        birthDate:   birthDateFromId(e.id_number),
+        name:        e.full_name,
+        jobPosition: e.job_position,
+      })
+    }
+
+    const map = new Map<number, { name: string; jobPosition: string | null; nett: number; paye: number; uifEmp: number; uifEmr: number; gross: number; isMonthly: boolean }>()
     for (const p of filteredPayslips) {
-      const name = p.vb_employee?.full_name ?? `Employee #${p.employee_id}`
-      const cur = map.get(name) ?? { nett: 0, paye: 0, uifEmp: 0, uifEmr: 0, gross: 0 }
-      cur.nett   += Number(p.nett_pay ?? 0)
-      cur.paye   += Number(p.paye ?? 0)
-      cur.uifEmp += Number(p.uif_employee ?? 0)
-      cur.uifEmr += Number(p.uif_employer ?? 0)
-      cur.gross  += Number(p.total_earnings ?? 0)
-      map.set(name, cur)
+      const empInfo   = empMap.get(p.employee_id)
+      const name      = empInfo?.name ?? p.vb_employee?.full_name ?? `Employee #${p.employee_id}`
+      const birthDate = empInfo?.birthDate ?? null
+      const earnings  = Number(p.total_earnings ?? 0)
+      const isMonthly = p.payslip_type === 'monthly'
+
+      // Calculate PAYE from tax table (only for monthly payslips)
+      const computedPaye = isMonthly
+        ? calcPayslipPaye(earnings, p.payslip_type, birthDate, p.pay_date ?? p.period_to)
+        : 0
+
+      // Use stored paye if it exists and is > 0, otherwise use computed
+      const payeAmount = (Number(p.paye ?? 0) > 0) ? Number(p.paye) : computedPaye
+
+      const cur = map.get(p.employee_id) ?? {
+        name, jobPosition: empInfo?.jobPosition ?? null,
+        nett: 0, paye: 0, uifEmp: 0, uifEmr: 0, gross: 0, isMonthly,
+      }
+      cur.nett      += Number(p.nett_pay ?? 0)
+      cur.paye      += payeAmount
+      cur.uifEmp    += Number(p.uif_employee ?? 0)
+      cur.uifEmr    += Number(p.uif_employer ?? 0)
+      cur.gross     += earnings
+      cur.isMonthly  = cur.isMonthly || isMonthly
+      map.set(p.employee_id, cur)
     }
     return Array.from(map.entries())
-      .map(([name, v]) => ({
-        name,
-        nett:       Math.round(v.nett),
-        paye:       Math.round(v.paye),
-        uifEmp:     Math.round(v.uifEmp),
-        uifEmr:     Math.round(v.uifEmr),
-        gross:      Math.round(v.gross),
-        totalCost:  Math.round(v.nett + v.paye + v.uifEmp + v.uifEmr),
-      }))
+      .map(([empId, v]) => {
+        const empInfo = empMap.get(empId)
+        const bd      = empInfo?.birthDate
+        const today   = new Date()
+        const ageNow  = bd ? ageAtDate(bd, today) : null
+        return {
+          name:        v.name,
+          jobPosition: v.jobPosition,
+          nett:        Math.round(v.nett),
+          paye:        Math.round(v.paye),
+          uifEmp:      Math.round(v.uifEmp),
+          uifEmr:      Math.round(v.uifEmr),
+          gross:       Math.round(v.gross),
+          totalCost:   Math.round(v.nett + v.paye + v.uifEmp + v.uifEmr),
+          isMonthly:   v.isMonthly,
+          age:         ageNow,
+        }
+      })
       .sort((a, b) => b.totalCost - a.totalCost)
-  }, [filteredPayslips])
+  }, [filteredPayslips, employees])
 
   // ── VAT summary ──
   const vatData = useMemo(() => [
@@ -671,6 +828,33 @@ export default function BusinessDashboard() {
           <RefreshCw className="w-3.5 h-3.5" />Refresh
         </Button>
       </div>
+
+      {/* ── Birthday notices ── */}
+      {upcomingBirthdays.length > 0 && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 space-y-2">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-lg">🎂</span>
+            <p className="text-sm font-semibold text-amber-800">Upcoming Birthdays</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {upcomingBirthdays.map(b => (
+              <div key={b.employee_id} className="flex items-center gap-2 bg-white border border-amber-200 rounded-xl px-3 py-2 shadow-sm">
+                <div>
+                  <p className="text-xs font-semibold text-amber-900">{b.full_name}</p>
+                  <p className="text-[10px] text-amber-700">
+                    {b.job_position && <span>{b.job_position} · </span>}
+                    {b.days === 0
+                      ? <span className="font-bold text-amber-600">🎉 Today! Turning {b.age}</span>
+                      : b.days === 1
+                        ? <span>Tomorrow · Turning {b.age}</span>
+                        : <span>In {b.days} days · Turning {b.age}</span>}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── Filter Bar ── */}
       <div className="rounded-2xl border bg-card p-4 space-y-3">
@@ -1282,6 +1466,7 @@ export default function BusinessDashboard() {
                 <table className="w-full text-xs">
                   <thead><tr className="border-b bg-muted/20">
                     <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Employee</th>
+                    <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Age</th>
                     <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Gross Earnings</th>
                     <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Nett Pay</th>
                     <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">PAYE</th>
@@ -1296,12 +1481,31 @@ export default function BusinessDashboard() {
                         <td className="px-4 py-2.5 font-medium">
                           <div className="flex items-center gap-2">
                             <div className="w-2 h-2 rounded-sm shrink-0" style={{ background: PALETTE[i % PALETTE.length] }} />
-                            {e.name}
+                            <div>
+                              <span>{e.name}</span>
+                              {e.jobPosition && <span className="ml-1 text-[10px] text-muted-foreground">({e.jobPosition})</span>}
+                            </div>
                           </div>
+                        </td>
+                        <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground text-xs">
+                          {e.age != null ? (
+                            <span className={e.age >= 75 ? 'text-purple-600 font-semibold' : e.age >= 65 ? 'text-blue-600 font-semibold' : ''}>
+                              {e.age}
+                              {e.age >= 75 ? ' (75+)' : e.age >= 65 ? ' (65–74)' : ''}
+                            </span>
+                          ) : '—'}
                         </td>
                         <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{ZAR(e.gross)}</td>
                         <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(e.nett)}</td>
-                        <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: e.paye > 0 ? BRAND.terracotta : undefined }}>{ZAR(e.paye)}</td>
+                        <td className="px-4 py-2.5 text-right tabular-nums">
+                          {e.isMonthly ? (
+                            e.paye > 0
+                              ? <span style={{ color: BRAND.terracotta }} className="font-semibold">{ZAR(e.paye)}</span>
+                              : <span className="text-muted-foreground text-xs">R0 (below threshold)</span>
+                          ) : (
+                            <span className="text-muted-foreground text-xs">Weekly — n/a</span>
+                          )}
+                        </td>
                         <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{ZAR(e.uifEmp)}</td>
                         <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{ZAR(e.uifEmr)}</td>
                         <td className="px-4 py-2.5 text-right tabular-nums font-semibold">{ZAR(e.totalCost)}</td>
@@ -1312,6 +1516,7 @@ export default function BusinessDashboard() {
                   <tfoot>
                     <tr className="bg-muted/30 font-semibold border-t-2">
                       <td className="px-4 py-2.5">TOTALS</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">—</td>
                       <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(core.grossEarningsTotal)}</td>
                       <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(core.nettPayTotal)}</td>
                       <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(core.payeTotal)}</td>
