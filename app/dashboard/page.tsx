@@ -467,13 +467,7 @@ export default function BusinessDashboard() {
     const uifEmployerTotal  = filteredPayslips.reduce((s, p) => s + Number(p.uif_employer ?? 0), 0)
     const grossEarningsTotal = filteredPayslips.reduce((s, p) => s + Number(p.total_earnings ?? 0), 0)
     // PAYE: compute from tax table for monthly payslips using employee birth date
-    const payeTotal = filteredPayslips.reduce((s, p) => {
-      if (p.payslip_type !== 'monthly') return s
-      // Use stored value if > 0 (already calculated and saved), else compute from table
-      if (Number(p.paye ?? 0) > 0) return s + Number(p.paye)
-      const bd = empBdMap.get(p.employee_id) ?? null
-      return s + calcPayslipPaye(Number(p.total_earnings ?? 0), p.payslip_type, bd, p.pay_date ?? p.period_to)
-    }, 0)
+    const payeTotal = filteredPayslips.reduce((s, p) => s + Number(p.paye ?? 0), 0)
     // Total employee cost for P&L = gross earnings (what employee earns before deductions)
     // = nett_pay + paye + uif_employee  (employer also pays uif_employer on top)
     const totalWageCosts    = nettPayTotal + payeTotal + uifEmployeeTotal  // gross cost on income statement
