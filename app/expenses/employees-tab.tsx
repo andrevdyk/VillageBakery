@@ -112,6 +112,65 @@ const DEFAULT_OT_MODE: OtRateMode  = 'multiplier'
 const DEFAULT_OT_VALUE             = 1.5
 const DEFAULT_PH_MODE: PhRateMode  = 'multiplier'
 const DEFAULT_PH_VALUE             = 2.0
+const PAYE_TABLE: Array<{ from: number; to: number; under65: number; age65to74: number; age75plus: number }> = [
+  { from: 8111, to: 8211,  under65: 0,   age65to74: 0, age75plus: 0 },
+  { from: 8212, to: 8312,  under65: 2,   age65to74: 0, age75plus: 0 },
+  { from: 8313, to: 8413,  under65: 20,  age65to74: 0, age75plus: 0 },
+  { from: 8414, to: 8514,  under65: 39,  age65to74: 0, age75plus: 0 },
+  { from: 8515, to: 8615,  under65: 57,  age65to74: 0, age75plus: 0 },
+  { from: 8616, to: 8716,  under65: 75,  age65to74: 0, age75plus: 0 },
+  { from: 8717, to: 8817,  under65: 93,  age65to74: 0, age75plus: 0 },
+  { from: 8818, to: 8918,  under65: 111, age65to74: 0, age75plus: 0 },
+  { from: 8919, to: 9019,  under65: 129, age65to74: 0, age75plus: 0 },
+  { from: 9020, to: 9120,  under65: 148, age65to74: 0, age75plus: 0 },
+  { from: 9121, to: 9221,  under65: 166, age65to74: 0, age75plus: 0 },
+  { from: 9222, to: 9322,  under65: 184, age65to74: 0, age75plus: 0 },
+  { from: 9323, to: 9423,  under65: 202, age65to74: 0, age75plus: 0 },
+  { from: 9424, to: 9524,  under65: 220, age65to74: 0, age75plus: 0 },
+  { from: 9525, to: 9625,  under65: 238, age65to74: 0, age75plus: 0 },
+  { from: 9626, to: 9726,  under65: 257, age65to74: 0, age75plus: 0 },
+  { from: 9727, to: 9827,  under65: 275, age65to74: 0, age75plus: 0 },
+  { from: 9828, to: 9928,  under65: 293, age65to74: 0, age75plus: 0 },
+]
+
+function birthDateFromId(idNumber: string | null): Date | null {
+  if (!idNumber || idNumber.length < 6) return null
+  const yy = parseInt(idNumber.slice(0, 2), 10)
+  const mm = parseInt(idNumber.slice(2, 4), 10) - 1
+  const dd = parseInt(idNumber.slice(4, 6), 10)
+  if (isNaN(yy) || isNaN(mm) || isNaN(dd)) return null
+  const fullYear = yy <= 24 ? 2000 + yy : 1900 + yy
+  const d = new Date(fullYear, mm, dd)
+  return isNaN(d.getTime()) ? null : d
+}
+ 
+function ageAtDate(birthDate: Date, refDate: Date): number {
+  let age = refDate.getFullYear() - birthDate.getFullYear()
+  const m = refDate.getMonth() - birthDate.getMonth()
+  if (m < 0 || (m === 0 && refDate.getDate() < birthDate.getDate())) age--
+  return age
+}
+ 
+function lookupPaye(monthlyEarnings: number, ageYears: number): number {
+  const row = PAYE_TABLE.find(r => monthlyEarnings >= r.from && monthlyEarnings <= r.to)
+  if (!row) return 0
+  if (ageYears >= 75) return row.age75plus
+  if (ageYears >= 65) return row.age65to74
+  return row.under65
+}
+ 
+function computePaye(
+  totalEarnings: number,
+  payslipType: 'weekly' | 'monthly',
+  employeeIdNumber: string | null,
+  payDate: string,
+): number {
+  if (payslipType !== 'monthly') return 0
+  const bd = birthDateFromId(employeeIdNumber)
+  if (!bd) return 0
+  const age = ageAtDate(bd, new Date(payDate))
+  return lookupPaye(totalEarnings, age)
+}
 
 const ZAR = (n: number) =>
   new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(n)
@@ -161,11 +220,14 @@ function calcPayslip(inputs: {
   ph_rate_mode: PhRateMode; ph_rate_value: number
   regular_hours: number; regular_days: number; overtime_hours: number
   public_holiday_hours: number; public_holiday_days: number
-  leave_days: number; bonus: number; extra_earnings: ExtraEarning[]; other_deductions: number
+  leave_days: number; bonus: number; extra_earnings: ExtraEarning[]; other_deductions: number;
+  payslip_type?: 'weekly' | 'monthly';
+  employee_id_number?: string | null;
+  pay_date?: string
 }) {
   const { pay_type, flat_amount, rate, ot_rate_mode, ot_rate_value, ph_rate_mode, ph_rate_value,
     regular_hours, regular_days, overtime_hours, public_holiday_hours, public_holiday_days,
-    leave_days, bonus, extra_earnings, other_deductions } = inputs
+    leave_days, bonus, extra_earnings, other_deductions, payslip_type, employee_id_number, pay_date } = inputs
 
   let regular_pay = 0, overtime_pay = 0, public_holiday_pay = 0, leave_pay = 0
   if (pay_type === 'flat') {
@@ -184,10 +246,12 @@ function calcPayslip(inputs: {
   const extra_total      = extra_earnings.reduce((s, e) => s + (e.amount || 0), 0)
   const total_earnings   = fmt2(regular_pay + overtime_pay + public_holiday_pay + leave_pay + bonus + extra_total)
   const uif_employee     = fmt2(total_earnings * UIF_RATE)
-  const total_deductions = fmt2(uif_employee + other_deductions)
+  const paye             = fmt2(computePaye(total_earnings, payslip_type ?? 'weekly', employee_id_number ?? null, pay_date ?? new Date().toISOString().split('T')[0]))
+  const total_deductions = fmt2(uif_employee + paye + other_deductions)
   const nett_pay         = fmt2(total_earnings - total_deductions)
   const payout           = roundToTenCents(nett_pay)
-  return { regular_pay, overtime_pay, public_holiday_pay, leave_pay, total_earnings, uif_employee, total_deductions, nett_pay, payout }
+  // NOTE: return now includes paye
+  return { regular_pay, overtime_pay, public_holiday_pay, leave_pay, total_earnings, uif_employee, paye, total_deductions, nett_pay, payout }
 }
 
 function otRateLabel(baseRate: number, mode: OtRateMode, value: number): string {
@@ -623,7 +687,10 @@ function GeneratePayslipModal({
     public_holiday_hours: phHours, public_holiday_days: phDays,
     leave_days: leaveDays, bonus, extra_earnings: extraEarnings,
     other_deductions: extraDeductions.reduce((s, d) => s + (d.amount || 0), 0),
-  }), [payType, rate, otMode, otValue, phMode, phValue, regularHours, regularDays, overtimeHours, phHours, phDays, leaveDays, bonus, extraEarnings, extraDeductions])
+    payslip_type: payslipType,
+    employee_id_number: emp?.id_number ?? null,
+    pay_date: payDate,
+  }), [payType, rate, otMode, otValue, phMode, phValue, regularHours, regularDays, overtimeHours, phHours, phDays, leaveDays, bonus, extraEarnings, extraDeductions, payslipType, emp, payDate])
 
   const effectiveOtRate = resolveOtRate(rate, otMode, otValue)
 
@@ -635,6 +702,7 @@ function GeneratePayslipModal({
       flat_amount: payType === 'flat' ? rate : 0,
       rate: payType === 'flat' ? 0 : rate,
       ot_rate_mode: otMode, ot_rate_value: otValue,
+      paye: calc.paye ?? 0,
       ph_rate_mode: phMode, ph_rate_value: phValue,
       regular_hours: regularHours, regular_days: regularDays,
       overtime_hours: overtimeHours,
@@ -833,6 +901,16 @@ function GeneratePayslipModal({
                   <span>{d.label || 'Deduction'}</span><span>− {ZAR(d.amount)}</span>
                 </div>
               ))}
+              {payslipType === 'monthly' && (
+                <div className="flex justify-between text-muted-foreground">
+                  <span>
+                    PAYE {calc.paye > 0
+                      ? `(${emp?.id_number ? 'age-based' : 'no ID — 0'} — R${calc.paye.toFixed(2)})`
+                      : '(below R8,111 threshold)'}
+                  </span>
+                  <span>{calc.paye > 0 ? `− ${ZAR(calc.paye)}` : 'R 0.00'}</span>
+                </div>
+              )}
               <div className="flex justify-between font-semibold text-base border-t pt-1.5 mt-1"><span>Nett pay</span><span>{ZAR(calc.nett_pay)}</span></div>
               <div className="flex justify-between text-muted-foreground text-xs"><span>Payout (rounded to 10c)</span><span>{ZAR(calc.payout)}</span></div>
             </div>

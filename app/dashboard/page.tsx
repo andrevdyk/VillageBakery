@@ -6,7 +6,7 @@ import {
   TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle2,
   XCircle, BarChart3, DollarSign, ShoppingCart, Receipt,
   Users, Package, ArrowUpRight, ArrowDownRight, RefreshCw,
-  Calendar, ChevronDown, Info, Loader2,
+  Calendar, ChevronDown, Info, Loader2, Scale,
 } from 'lucide-react'
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -79,13 +79,29 @@ interface RetailCount {
 interface Payslip {
   payslip_id: number
   employee_id: number
-  pay_date: string | null
+  pay_date: string | null        // period end date (e.g. 2026-03-07) — the "work period" date
   period_from: string
   period_to: string
+  payslip_type: string | null
+  pay_type: string | null
+  rate: string | number | null
+  regular_hours: string | number | null
+  regular_days: string | number | null
+  regular_pay: string | number | null
+  overtime_pay: string | number | null
+  public_holiday_pay: string | number | null
+  leave_pay: string | number | null
+  bonus: string | number | null
   total_earnings: number
-  nett_pay: number
   uif_employee: number
+  paye: number | null            // PAYE — null/0 for workers below threshold
+  uif_employer?: number | null   // employer UIF contribution (if tracked separately)
+  other_deductions: string | number | null
+  other_deductions_label: string | null
   total_deductions: number
+  nett_pay: number
+  payout: string | number | null // actual cash handed over (rounded)
+  notes: string | null
   vb_employee?: { full_name: string } | null
 }
 
@@ -123,7 +139,6 @@ const MONTHS_FULL  = ['January','February','March','April','May','June','July','
 
 // ─── Filter helpers ───────────────────────────────────────────────────────────
 type FilterMode = 'month' | 'quarter' | 'fy' | 'custom'
-
 interface DateRange { from: string; to: string }
 
 function getRange(mode: FilterMode, year: number, month: number, quarter: number, fy: number, customFrom: string, customTo: string): DateRange {
@@ -216,6 +231,14 @@ function HealthBadge({ status }: { status: 'good' | 'warning' | 'bad' }) {
   return <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-red-700 bg-red-50 border border-red-200 rounded-full px-2 py-0.5"><XCircle className="w-3 h-3" />Concern</span>
 }
 
+// ─── Variance Badge ───────────────────────────────────────────────────────────
+function VarianceBadge({ variance }: { variance: number }) {
+  const abs = Math.abs(variance)
+  if (abs < 1) return <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5"><CheckCircle2 className="w-3 h-3" />Balanced</span>
+  if (variance > 0) return <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5"><ArrowUpRight className="w-3 h-3" />Over by {ZAR(abs)}</span>
+  return <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-red-700 bg-red-50 border border-red-200 rounded-full px-2 py-0.5"><ArrowDownRight className="w-3 h-3" />Short by {ZAR(abs)}</span>
+}
+
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 export default function BusinessDashboard() {
   const supabase = createClient()
@@ -237,6 +260,9 @@ export default function BusinessDashboard() {
   const [filterFY,      setFilterFY]      = useState(now.getMonth() >= 2 ? now.getFullYear() : now.getFullYear() - 1)
   const [customFrom,    setCustomFrom]    = useState('')
   const [customTo,      setCustomTo]      = useState('')
+  // payslipDateMode: which date field to use when bucketing payslips into a period
+  // 'pay_date' = the payslip date (primary) · 'period_to' = the work period end date
+  const [payslipDateMode, setPayslipDateMode] = useState<'pay_date' | 'period_to'>('pay_date')
 
   const range = useMemo(() =>
     getRange(filterMode, filterYear, filterMonth, filterQuarter, filterFY, customFrom, customTo),
@@ -250,6 +276,7 @@ export default function BusinessDashboard() {
       supabase.from('cash_up_sheets').select('*').order('sheet_date', { ascending: false }),
       supabase.from('vb_expense').select('*, vb_supplier(company_name)'),
       supabase.from('vb_retail_stock_count_enriched').select('*'),
+      // ── Fetch paye field too ──
       supabase.from('vb_payslip').select('*, vb_employee(full_name)'),
     ])
     setCashUpSheets((sheets.data as CashUpSheet[]) ?? [])
@@ -275,98 +302,153 @@ export default function BusinessDashboard() {
     retailCounts.filter(c => inRange(c.count_date, range)),
     [retailCounts, range]
   )
-  const filteredPayslips = useMemo(() =>
-    payslips.filter(p => inRange(p.pay_date ?? p.period_to, range)),
-    [payslips, range]
-  )
+  const filteredPayslips = useMemo(() => {
+    return payslips.filter(p => {
+      // pay_date = the payslip date (primary), falling back to period_to
+      const dateStr = payslipDateMode === 'pay_date'
+        ? (p.pay_date ?? p.period_to)
+        : p.period_to
+      return inRange(dateStr, range)
+    })
+  }, [payslips, range, payslipDateMode])
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // ── CORE CALCULATIONS ─────────────────────────────────────────────────────────
+  // ── CORE CALCULATIONS (CORRECTED) ────────────────────────────────────────────
   // ─────────────────────────────────────────────────────────────────────────────
 
   const core = useMemo(() => {
-    // ── Revenue ──
-    const grossRevenue     = filteredSheets.reduce((s, r) => s + parseNum(r.till_total_z_print), 0)
-    const revenueExclVat   = grossRevenue / 1.15
-    const outputVat        = grossRevenue - revenueExclVat
 
-    // ── Expenses ──
+    // ══════════════════════════════════════════════════════════════════════════
+    // 1. REVENUE
+    // Rule: Revenue = till_total_z_print ÷ 1.15  (Z-print is always incl. VAT)
+    // ══════════════════════════════════════════════════════════════════════════
+    const zRevenue        = filteredSheets.reduce((s, r) => s + parseNum(r.till_total_z_print), 0)  // incl. VAT
+    const revenueExclVat  = zRevenue / 1.15                                                          // excl. VAT — the trading revenue
+    const outputVat       = zRevenue - revenueExclVat                                                // VAT collected
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // 2. ACTUAL REVENUE RECEIVED (cash + card + accounts)
+    //    Used for Z vs Actual variance check only
+    // ══════════════════════════════════════════════════════════════════════════
+    const cashTotal       = filteredSheets.reduce((s, r) => s + parseNum(r.total_cash), 0)
+    const cardTotal       = filteredSheets.reduce((s, r) => s + parseNum(r.credit_card_yoco), 0)
+    const accountsTotal   = filteredSheets.reduce((s, r) => s + parseNum(r.charged_sales_accounts), 0)
+    const actualReceived  = cashTotal + cardTotal + accountsTotal                                    // incl. VAT
+    // Variance: positive = Z is higher than actual received (short), negative = over
+    const zVariance       = zRevenue - actualReceived
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // 3. EXPENSES (supplier purchases / operating costs)
+    // ══════════════════════════════════════════════════════════════════════════
     const totalExpensesIncl = filteredExpenses.reduce((s, e) => s + Number(e.amount_incl_vat), 0)
     const totalExpensesExcl = filteredExpenses.reduce((s, e) => s + Number(e.amount_excl_vat), 0)
     const inputVat          = filteredExpenses.reduce((s, e) => s + Number(e.vat_amount), 0)
     const unpaidExpenses    = filteredExpenses.filter(e => !e.date_paid).reduce((s, e) => s + Number(e.amount_incl_vat), 0)
 
-    // ── VAT ──
-    const vatPayable = outputVat - inputVat  // positive = pay SARS, negative = claim back
-
-    // ── Stock (COGS) ──
-    // Cost of goods sold = opening stock value - closing stock value + received (net movement)
-    // We use: sum of (op_stock_value) for the period's counts as proxy for COGS consumed
+    // ══════════════════════════════════════════════════════════════════════════
+    // 4. COGS (Cost of Goods Sold) — CORRECTED FORMULA
+    //    COGS = Opening Stock Value + Stock Purchases (excl VAT) − Closing Stock Value
+    //    Stock Purchases = new_received × cost_per_item  (already excl VAT in enriched view)
+    // ══════════════════════════════════════════════════════════════════════════
     const totalOpStockValue = filteredCounts.reduce((s, c) => s + (c.op_stock_value ?? 0), 0)
     const totalClStockValue = filteredCounts.reduce((s, c) => s + (c.cl_stock_value ?? 0), 0)
-    const stockRevenue      = filteredCounts.reduce((s, c) => s + (c.revenue ?? 0), 0)
-    // COGS = opening + received - closing
-    const received = filteredCounts.reduce((s, c) => {
+    const stockPurchases    = filteredCounts.reduce((s, c) => {
       const rcv = (c.new_received ?? 0) * (c.cost_per_item ?? 0)
       return s + rcv
     }, 0)
-    const cogs = Math.max(0, totalOpStockValue + received - totalClStockValue)
+    // COGS = Opening + Purchases − Closing  (all excl VAT)
+    const cogs              = Math.max(0, totalOpStockValue + stockPurchases - totalClStockValue)
+    const stockRevenue      = filteredCounts.reduce((s, c) => s + (c.revenue ?? 0), 0)
 
-    // ── Employee costs ──
-    const employeeCosts  = filteredPayslips.reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
-    const uifTotal       = filteredPayslips.reduce((s, p) => s + Number(p.uif_employee ?? 0), 0)
-    const totalWageCosts = employeeCosts  // nett pay = what employees receive
+    // ══════════════════════════════════════════════════════════════════════════
+    // 5. EMPLOYEE COSTS — CORRECTED: includes PAYE + UIF
+    //    Total employer labour cost = nett_pay + paye + uif_employee + uif_employer
+    //    (Gross cost to company, not just take-home)
+    // ══════════════════════════════════════════════════════════════════════════
+    const nettPayTotal      = filteredPayslips.reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
+    const payeTotal         = filteredPayslips.reduce((s, p) => s + Number(p.paye ?? 0), 0)
+    const uifEmployeeTotal  = filteredPayslips.reduce((s, p) => s + Number(p.uif_employee ?? 0), 0)
+    const uifEmployerTotal  = filteredPayslips.reduce((s, p) => s + Number(p.uif_employer ?? 0), 0)
+    const grossEarningsTotal = filteredPayslips.reduce((s, p) => s + Number(p.total_earnings ?? 0), 0)
+    // Total employee cost for P&L = gross earnings (what employee earns before deductions)
+    // = nett_pay + paye + uif_employee  (employer also pays uif_employer on top)
+    const totalWageCosts    = nettPayTotal + payeTotal + uifEmployeeTotal  // gross cost on income statement
+    const totalLabourCost   = totalWageCosts + uifEmployerTotal            // full cost to company
 
-    // ── Profit ──
-    const grossProfit     = revenueExclVat - cogs
-    const grossMargin     = revenueExclVat > 0 ? (grossProfit / revenueExclVat * 100) : 0
-    const operatingExpenses = totalExpensesExcl - cogs  // expenses beyond cost of goods
-    const netProfit       = grossProfit - totalExpensesExcl - totalWageCosts
-    const netMargin       = revenueExclVat > 0 ? (netProfit / revenueExclVat * 100) : 0
+    // ══════════════════════════════════════════════════════════════════════════
+    // 6. PROFIT — CORRECTED STRUCTURE
+    //    Gross Profit       = Revenue (excl VAT) − COGS
+    //    Operating Expenses = Supplier expenses excl VAT (non-stock)
+    //    Net Profit BT      = Gross Profit − Operating Expenses − Labour Cost
+    // ══════════════════════════════════════════════════════════════════════════
+    const grossProfit       = revenueExclVat - cogs
+    const grossMargin       = revenueExclVat > 0 ? (grossProfit / revenueExclVat * 100) : 0
 
-    // ── Payment breakdown ──
-    const cashTotal   = filteredSheets.reduce((s, r) => s + parseNum(r.total_cash), 0)
-    const cardTotal   = filteredSheets.reduce((s, r) => s + parseNum(r.credit_card_yoco), 0)
-    const accountsTotal = filteredSheets.reduce((s, r) => s + parseNum(r.charged_sales_accounts), 0)
+    // Operating expenses = all supplier expenses excl VAT
+    // (In many small businesses, COGS is a subset of totalExpensesExcl —
+    //  if the retail stock purchases flow through vb_expense, subtract to avoid double-count.
+    //  Here we treat vb_expense as SEPARATE from stock counts — operating overheads only.)
+    const operatingExpenses = totalExpensesExcl   // supplier invoices (rent, utilities, packaging, etc.)
+
+    // ── Net Profit Before Tax ──
+    // = Gross Profit − Operating Expenses (overheads) − Labour Cost
+    const netProfitBeforeTax  = grossProfit - operatingExpenses - totalLabourCost
+    const netMargin           = revenueExclVat > 0 ? (netProfitBeforeTax / revenueExclVat * 100) : 0
+
+    // ── VAT position ──
+    const vatPayable = outputVat - inputVat  // positive = owe SARS, negative = claim back
 
     // ── EBITDA proxy ──
-    const ebitda = grossProfit - (totalExpensesExcl - cogs) - totalWageCosts
+    const ebitda = grossProfit - operatingExpenses - totalLabourCost
 
     return {
-      grossRevenue, revenueExclVat, outputVat,
-      totalExpensesIncl, totalExpensesExcl, inputVat, unpaidExpenses,
-      vatPayable,
-      totalOpStockValue, totalClStockValue, cogs, stockRevenue,
-      employeeCosts, uifTotal, totalWageCosts,
-      grossProfit, grossMargin,
-      operatingExpenses, netProfit, netMargin,
+      // Revenue
+      zRevenue, revenueExclVat, outputVat,
+      // Z vs Actual
       cashTotal, cardTotal, accountsTotal,
+      actualReceived, zVariance,
+      // Expenses
+      totalExpensesIncl, totalExpensesExcl, inputVat, unpaidExpenses,
+      // VAT
+      vatPayable,
+      // Stock / COGS
+      totalOpStockValue, totalClStockValue, stockPurchases, cogs, stockRevenue,
+      // Labour
+      nettPayTotal, payeTotal, uifEmployeeTotal, uifEmployerTotal,
+      grossEarningsTotal, totalWageCosts, totalLabourCost,
+      // Profit
+      grossProfit, grossMargin,
+      operatingExpenses,
+      netProfitBeforeTax, netMargin,
       ebitda,
+      // Meta
       sheetCount: filteredSheets.length,
-      avgDailyRevenue: filteredSheets.length > 0 ? grossRevenue / filteredSheets.length : 0,
+      avgDailyRevenue: filteredSheets.length > 0 ? zRevenue / filteredSheets.length : 0,
     }
   }, [filteredSheets, filteredExpenses, filteredCounts, filteredPayslips])
 
   // ── Monthly trend data ──
   const monthlyTrend = useMemo(() => {
-    const map = new Map<string, { revenue: number; expenses: number; wages: number; grossProfit: number }>()
+    const map = new Map<string, { revenue: number; expenses: number; wages: number; netProfit: number }>()
 
     for (const s of cashUpSheets) {
       const key = dateKey(sheetDate(s))
-      const cur = map.get(key) ?? { revenue: 0, expenses: 0, wages: 0, grossProfit: 0 }
-      cur.revenue += parseNum(s.till_total_z_print) / 1.15
+      const cur = map.get(key) ?? { revenue: 0, expenses: 0, wages: 0, netProfit: 0 }
+      cur.revenue += parseNum(s.till_total_z_print) / 1.15   // excl VAT
       map.set(key, cur)
     }
     for (const e of expenses) {
       const key = e.invoice_date.slice(0,7)
-      const cur = map.get(key) ?? { revenue: 0, expenses: 0, wages: 0, grossProfit: 0 }
+      const cur = map.get(key) ?? { revenue: 0, expenses: 0, wages: 0, netProfit: 0 }
       cur.expenses += Number(e.amount_excl_vat)
       map.set(key, cur)
     }
     for (const p of payslips) {
+      // Use pay_date as the payslip date, falling back to period_to
       const key = (p.pay_date ?? p.period_to).slice(0,7)
-      const cur = map.get(key) ?? { revenue: 0, expenses: 0, wages: 0, grossProfit: 0 }
-      cur.wages += Number(p.nett_pay ?? 0)
+      const cur = map.get(key) ?? { revenue: 0, expenses: 0, wages: 0, netProfit: 0 }
+      // Labour cost = nett + paye + uif
+      cur.wages += Number(p.nett_pay ?? 0) + Number(p.paye ?? 0) + Number(p.uif_employee ?? 0) + Number(p.uif_employer ?? 0)
       map.set(key, cur)
     }
 
@@ -375,13 +457,13 @@ export default function BusinessDashboard() {
       .slice(-12)
       .map(([key, vals]) => {
         const [yr, mo] = key.split('-')
-        const gp = vals.revenue - vals.expenses - vals.wages
+        const np = vals.revenue - vals.expenses - vals.wages
         return {
           name:      `${MONTHS_SHORT[parseInt(mo)-1]} ${yr.slice(2)}`,
           revenue:   Math.round(vals.revenue),
           expenses:  Math.round(vals.expenses),
           wages:     Math.round(vals.wages),
-          netProfit: Math.round(gp),
+          netProfit: Math.round(np),
         }
       })
   }, [cashUpSheets, expenses, payslips])
@@ -389,9 +471,37 @@ export default function BusinessDashboard() {
   // ── Daily revenue for current period ──
   const dailyRevenue = useMemo(() =>
     filteredSheets
-      .map(s => ({ date: sheetDate(s).toISOString().split('T')[0], total: parseNum(s.till_total_z_print) }))
+      .map(s => ({
+        date:     sheetDate(s).toISOString().split('T')[0],
+        zTotal:   parseNum(s.till_total_z_print),
+        actual:   parseNum(s.total_cash) + parseNum(s.credit_card_yoco) + parseNum(s.charged_sales_accounts),
+        variance: parseNum(s.till_total_z_print) - (parseNum(s.total_cash) + parseNum(s.credit_card_yoco) + parseNum(s.charged_sales_accounts)),
+      }))
       .sort((a, b) => a.date.localeCompare(b.date))
-      .map(d => ({ name: d.date.slice(5), total: Math.round(d.total) }))
+      .map(d => ({
+        name:     d.date.slice(5),
+        zTotal:   Math.round(d.zTotal),
+        actual:   Math.round(d.actual),
+        variance: Math.round(d.variance),
+      }))
+  , [filteredSheets])
+
+  // ── Z vs Actual per-day detail ──
+  const zActualDetail = useMemo(() =>
+    filteredSheets
+      .map(s => {
+        const z      = parseNum(s.till_total_z_print)
+        const cash   = parseNum(s.total_cash)
+        const card   = parseNum(s.credit_card_yoco)
+        const accs   = parseNum(s.charged_sales_accounts)
+        const actual = cash + card + accs
+        return {
+          date:     sheetDate(s).toISOString().split('T')[0],
+          z, cash, card, accounts: accs, actual,
+          variance: z - actual,
+        }
+      })
+      .sort((a, b) => b.date.localeCompare(a.date))
   , [filteredSheets])
 
   // ── Expense breakdown by supplier ──
@@ -409,34 +519,49 @@ export default function BusinessDashboard() {
 
   // ── Category profit analysis ──
   const categoryAnalysis = useMemo(() => {
-    const map = new Map<string, { revenue: number; cogs: number; opVal: number; clVal: number; items: number }>()
+    const map = new Map<string, { revenue: number; opVal: number; clVal: number; purchases: number }>()
     for (const c of filteredCounts) {
       const k = c.category_name ?? 'Uncategorised'
-      const e = map.get(k) ?? { revenue: 0, cogs: 0, opVal: 0, clVal: 0, items: 0 }
-      e.revenue += c.revenue ?? 0
-      e.opVal   += c.op_stock_value ?? 0
-      e.clVal   += c.cl_stock_value ?? 0
-      e.items++
+      const e = map.get(k) ?? { revenue: 0, opVal: 0, clVal: 0, purchases: 0 }
+      e.revenue   += c.revenue ?? 0
+      e.opVal     += c.op_stock_value ?? 0
+      e.clVal     += c.cl_stock_value ?? 0
+      e.purchases += (c.new_received ?? 0) * (c.cost_per_item ?? 0)
       map.set(k, e)
     }
     return Array.from(map.entries()).map(([name, v]) => {
-      const cogs      = Math.max(0, v.opVal - v.clVal)
-      const gp        = v.revenue - cogs
-      const margin    = v.revenue > 0 ? gp / v.revenue * 100 : 0
+      // COGS per category = opening + purchases − closing
+      const cogs   = Math.max(0, v.opVal + v.purchases - v.clVal)
+      const gp     = v.revenue - cogs
+      const margin = v.revenue > 0 ? gp / v.revenue * 100 : 0
       return { name, revenue: Math.round(v.revenue), cogs: Math.round(cogs), grossProfit: Math.round(gp), margin: Math.round(margin) }
     }).sort((a, b) => b.revenue - a.revenue)
   }, [filteredCounts])
 
   // ── Employee cost breakdown ──
   const employeeBreakdown = useMemo(() => {
-    const map = new Map<string, number>()
+    const map = new Map<string, { nett: number; paye: number; uifEmp: number; uifEmr: number; gross: number }>()
     for (const p of filteredPayslips) {
       const name = p.vb_employee?.full_name ?? `Employee #${p.employee_id}`
-      map.set(name, (map.get(name) ?? 0) + Number(p.nett_pay ?? 0))
+      const cur = map.get(name) ?? { nett: 0, paye: 0, uifEmp: 0, uifEmr: 0, gross: 0 }
+      cur.nett   += Number(p.nett_pay ?? 0)
+      cur.paye   += Number(p.paye ?? 0)
+      cur.uifEmp += Number(p.uif_employee ?? 0)
+      cur.uifEmr += Number(p.uif_employer ?? 0)
+      cur.gross  += Number(p.total_earnings ?? 0)
+      map.set(name, cur)
     }
     return Array.from(map.entries())
-      .map(([name, total]) => ({ name, total: Math.round(total) }))
-      .sort((a, b) => b.total - a.total)
+      .map(([name, v]) => ({
+        name,
+        nett:       Math.round(v.nett),
+        paye:       Math.round(v.paye),
+        uifEmp:     Math.round(v.uifEmp),
+        uifEmr:     Math.round(v.uifEmr),
+        gross:      Math.round(v.gross),
+        totalCost:  Math.round(v.nett + v.paye + v.uifEmp + v.uifEmr),
+      }))
+      .sort((a, b) => b.totalCost - a.totalCost)
   }, [filteredPayslips])
 
   // ── VAT summary ──
@@ -458,43 +583,50 @@ export default function BusinessDashboard() {
       label: 'Gross Margin',
       value: pct(core.grossMargin),
       status: (core.grossMargin > 40 ? 'good' : core.grossMargin > 20 ? 'warning' : 'bad') as 'good' | 'warning' | 'bad',
-      detail: 'Revenue minus cost of goods sold',
+      detail: 'Revenue (excl. VAT) minus COGS',
       benchmark: '>40% is healthy for retail/bakery',
     },
     {
-      label: 'Net Profit Margin',
+      label: 'Net Profit Before Tax',
       value: pct(core.netMargin),
       status: (core.netMargin > 15 ? 'good' : core.netMargin > 0 ? 'warning' : 'bad') as 'good' | 'warning' | 'bad',
-      detail: 'After all costs including wages',
+      detail: 'After COGS, overheads and all labour',
       benchmark: '>15% is strong',
     },
     {
-      label: 'Wage Cost Ratio',
-      value: core.revenueExclVat > 0 ? pct(core.employeeCosts / core.revenueExclVat * 100) : '—',
-      status: (core.revenueExclVat > 0 && core.employeeCosts / core.revenueExclVat < 0.30 ? 'good' : core.revenueExclVat > 0 && core.employeeCosts / core.revenueExclVat < 0.45 ? 'warning' : 'bad') as 'good' | 'warning' | 'bad',
-      detail: 'Wages as % of revenue',
-      benchmark: '<30% revenue is healthy',
+      label: 'Labour Cost Ratio',
+      value: core.revenueExclVat > 0 ? pct(core.totalLabourCost / core.revenueExclVat * 100) : '—',
+      status: (core.revenueExclVat > 0 && core.totalLabourCost / core.revenueExclVat < 0.30 ? 'good' : core.revenueExclVat > 0 && core.totalLabourCost / core.revenueExclVat < 0.45 ? 'warning' : 'bad') as 'good' | 'warning' | 'bad',
+      detail: 'Total labour cost (incl. PAYE & UIF) as % of revenue',
+      benchmark: '<30% of revenue is healthy',
     },
     {
       label: 'Expense Ratio',
       value: core.revenueExclVat > 0 ? pct(core.totalExpensesExcl / core.revenueExclVat * 100) : '—',
       status: (core.revenueExclVat > 0 && core.totalExpensesExcl / core.revenueExclVat < 0.60 ? 'good' : core.revenueExclVat > 0 && core.totalExpensesExcl / core.revenueExclVat < 0.80 ? 'warning' : 'bad') as 'good' | 'warning' | 'bad',
-      detail: 'Total expenses as % of revenue',
+      detail: 'Operating expenses as % of revenue',
       benchmark: '<60% means profitable operation',
     },
     {
       label: 'Outstanding Payables',
       value: ZAR(core.unpaidExpenses),
-      status: (core.unpaidExpenses < core.grossRevenue * 0.1 ? 'good' : core.unpaidExpenses < core.grossRevenue * 0.25 ? 'warning' : 'bad') as 'good' | 'warning' | 'bad',
+      status: (core.unpaidExpenses < core.zRevenue * 0.1 ? 'good' : core.unpaidExpenses < core.zRevenue * 0.25 ? 'warning' : 'bad') as 'good' | 'warning' | 'bad',
       detail: 'Unpaid supplier invoices',
       benchmark: 'Keep below 10% of monthly revenue',
     },
     {
       label: 'VAT Position',
       value: ZAR(Math.abs(core.vatPayable)),
-      status: (core.vatPayable < 0 ? 'good' : core.vatPayable < core.grossRevenue * 0.05 ? 'warning' : 'bad') as 'good' | 'warning' | 'bad',
+      status: (core.vatPayable < 0 ? 'good' : core.vatPayable < core.zRevenue * 0.05 ? 'warning' : 'bad') as 'good' | 'warning' | 'bad',
       detail: core.vatPayable >= 0 ? 'Payable to SARS' : 'Refund due from SARS',
       benchmark: core.vatPayable >= 0 ? 'Ensure funds are set aside' : 'Submit claim to SARS',
+    },
+    {
+      label: 'Z vs Actual Variance',
+      value: ZAR(Math.abs(core.zVariance)),
+      status: (Math.abs(core.zVariance) < 10 ? 'good' : Math.abs(core.zVariance) < 100 ? 'warning' : 'bad') as 'good' | 'warning' | 'bad',
+      detail: core.zVariance >= 0 ? 'Z-print higher than cash received' : 'Received more than Z-print',
+      benchmark: 'Variance should be near zero',
     },
   ], [core])
 
@@ -524,8 +656,9 @@ export default function BusinessDashboard() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 lg:px-8 py-6 space-y-6">
-        <Header />
-      {/* ── Header ── */}
+      <Header />
+
+      {/* ── Page Header ── */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-xl font-bold tracking-tight">Business Overview</h1>
@@ -552,7 +685,6 @@ export default function BusinessDashboard() {
             {filteredSheets.length} trading days · {filteredExpenses.length} invoices
           </span>
         </div>
-
         <div className="flex flex-wrap gap-2 items-end">
           {(filterMode === 'month' || filterMode === 'quarter') && (
             <div className="space-y-1">
@@ -602,78 +734,107 @@ export default function BusinessDashboard() {
               </div>
             </>
           )}
+          {/* ── Wage date mode toggle ── */}
+          <div className="space-y-1">
+            <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">Wages date basis</Label>
+            <div className="flex gap-1">
+              {([
+                { val: 'pay_date',  label: 'Pay Date',   title: 'Use pay_date (the payslip date) to bucket wages' },
+                { val: 'period_to', label: 'Period End',  title: 'Use period_to (end of work period) to bucket wages' },
+              ] as const).map(opt => (
+                <button key={opt.val} onClick={() => setPayslipDateMode(opt.val)}
+                  title={opt.title}
+                  className={`px-2 py-1 rounded text-[10px] font-semibold transition-all ${payslipDateMode === opt.val ? 'bg-foreground text-background' : 'bg-muted text-muted-foreground hover:text-foreground'}`}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="self-end text-xs text-muted-foreground pb-1.5 font-mono">
-            {range.from} → {range.to}
+            {range.from} → {range.to} · {filteredPayslips.length} payslips
           </div>
         </div>
       </div>
 
       {/* ── Top KPIs ── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <KpiCard label="Gross Revenue (incl. VAT)" value={ZAR(core.grossRevenue)} sub={`${core.sheetCount} trading days`} accent={BRAND.caramel} icon={TrendingUp} size="lg" />
-        <KpiCard label="Revenue Excl. VAT" value={ZAR(core.revenueExclVat)} trendLabel={`Avg ${ZAR(Math.round(core.avgDailyRevenue))}/day`} accent={BRAND.coffee} icon={ShoppingCart} />
+        <KpiCard label="Z-Print Revenue (incl. VAT)" value={ZAR(core.zRevenue)} sub={`${core.sheetCount} trading days`} accent={BRAND.caramel} icon={TrendingUp} size="lg" />
+        <KpiCard label="Revenue Excl. VAT" value={ZAR(core.revenueExclVat)} trendLabel={`Avg ${ZAR(Math.round(core.avgDailyRevenue / 1.15))}/day excl. VAT`} accent={BRAND.coffee} icon={ShoppingCart} />
         <KpiCard label="Gross Profit" value={ZAR(core.grossProfit)} trendLabel={`${pct(core.grossMargin)} margin`} trend={core.grossMargin > 30 ? 'good-up' : 'bad-down'} accent={BRAND.sage} icon={DollarSign} />
-        <KpiCard label="Net Profit" value={ZAR(core.netProfit)} trendLabel={`${pct(core.netMargin)} margin`} trend={core.netProfit > 0 ? 'good-up' : 'bad-down'} accent={core.netProfit > 0 ? BRAND.sage : BRAND.terracotta} icon={BarChart3} />
+        <KpiCard label="Net Profit Before Tax" value={ZAR(core.netProfitBeforeTax)} trendLabel={`${pct(core.netMargin)} margin`} trend={core.netProfitBeforeTax > 0 ? 'good-up' : 'bad-down'} accent={core.netProfitBeforeTax > 0 ? BRAND.sage : BRAND.terracotta} icon={BarChart3} />
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <KpiCard label="Total Expenses (excl. VAT)" value={ZAR(core.totalExpensesExcl)} sub="Supplier invoices" accent={BRAND.terracotta} icon={Receipt} />
-        <KpiCard label="Employee Costs" value={ZAR(core.employeeCosts)} sub={`${filteredPayslips.length} payslips`} trendLabel={core.revenueExclVat > 0 ? `${pct(core.employeeCosts/core.revenueExclVat*100)} of revenue` : undefined} trend={core.revenueExclVat > 0 && core.employeeCosts/core.revenueExclVat < 0.30 ? 'good-down' : 'bad-up'} accent={BRAND.wheat} icon={Users} />
-        <KpiCard label="Stock on Hand (Closing)" value={ZAR(core.totalClStockValue)} sub={`Was ${ZAR(core.totalOpStockValue)}`} accent={BRAND.coffee} icon={Package} />
-        <KpiCard label="Outstanding Payables" value={ZAR(core.unpaidExpenses)} trendLabel="Unpaid supplier invoices" trend={core.unpaidExpenses > 0 ? 'bad-up' : 'good-down'} accent={core.unpaidExpenses > 0 ? BRAND.terracotta : BRAND.sage} />
+        <KpiCard label="Total Expenses (excl. VAT)" value={ZAR(core.totalExpensesExcl)} sub="Operating overheads" accent={BRAND.terracotta} icon={Receipt} />
+        <KpiCard label="Total Labour Cost" value={ZAR(core.totalLabourCost)} sub={`Nett + PAYE + UIF · ${filteredPayslips.length} payslips`}
+          trendLabel={core.revenueExclVat > 0 ? `${pct(core.totalLabourCost/core.revenueExclVat*100)} of revenue` : undefined}
+          trend={core.revenueExclVat > 0 && core.totalLabourCost/core.revenueExclVat < 0.30 ? 'good-down' : 'bad-up'}
+          accent={BRAND.wheat} icon={Users} />
+        <KpiCard label="Closing Stock Value" value={ZAR(core.totalClStockValue)} sub={`Opening was ${ZAR(core.totalOpStockValue)}`} accent={BRAND.coffee} icon={Package} />
+        {/* Z vs Actual variance */}
+        <div className="rounded-2xl border bg-card p-4 relative overflow-hidden flex flex-col gap-1.5">
+          <div className="absolute top-0 left-0 right-0 h-0.5" style={{ background: Math.abs(core.zVariance) < 10 ? BRAND.sage : BRAND.terracotta }} />
+          <div className="flex items-start justify-between">
+            <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium mt-0.5">Z vs Actual Variance</p>
+            <div className="w-7 h-7 rounded-lg flex items-center justify-center bg-muted shrink-0"><Scale className="w-3.5 h-3.5 text-muted-foreground" /></div>
+          </div>
+          <p className={`font-bold tabular-nums text-xl leading-tight ${Math.abs(core.zVariance) < 1 ? 'text-emerald-600' : Math.abs(core.zVariance) < 100 ? 'text-amber-600' : 'text-red-500'}`}>
+            {ZAR(Math.abs(core.zVariance))}
+          </p>
+          <VarianceBadge variance={core.zVariance} />
+        </div>
       </div>
 
       <Tabs defaultValue="overview">
         <TabsList className="h-9 rounded-xl bg-muted p-1 flex-wrap">
           <TabsTrigger value="overview"   className="rounded-lg text-xs px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">Overview</TabsTrigger>
+          <TabsTrigger value="revenue"    className="rounded-lg text-xs px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">Revenue & Z</TabsTrigger>
           <TabsTrigger value="vat"        className="rounded-lg text-xs px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">VAT</TabsTrigger>
-          <TabsTrigger value="revenue"    className="rounded-lg text-xs px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">Revenue</TabsTrigger>
           <TabsTrigger value="expenses"   className="rounded-lg text-xs px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">Expenses</TabsTrigger>
-          <TabsTrigger value="stock"      className="rounded-lg text-xs px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">Stock & Margin</TabsTrigger>
-          <TabsTrigger value="staff"      className="rounded-lg text-xs px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">Staff Costs</TabsTrigger>
+          <TabsTrigger value="stock"      className="rounded-lg text-xs px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">Stock & COGS</TabsTrigger>
+          <TabsTrigger value="staff"      className="rounded-lg text-xs px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">Staff & PAYE</TabsTrigger>
           <TabsTrigger value="health"     className="rounded-lg text-xs px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">Health Check</TabsTrigger>
         </TabsList>
 
-        {/* ── OVERVIEW ── */}
+        {/* ══════════════════════════════════════════════════════════════════ */}
+        {/* OVERVIEW TAB                                                       */}
+        {/* ══════════════════════════════════════════════════════════════════ */}
         <TabsContent value="overview" className="mt-5 space-y-5">
 
-          {/* P&L Summary */}
+          {/* ── P&L Summary ── */}
           <div className="rounded-2xl border bg-card overflow-hidden">
             <div className="px-5 py-4 border-b bg-muted/30">
-              <p className="text-sm font-semibold">Profit & Loss Summary</p>
-              <p className="text-xs text-muted-foreground">For the selected period</p>
+              <p className="text-sm font-semibold">Profit & Loss Statement</p>
+              <p className="text-xs text-muted-foreground">For the selected period · All figures excl. VAT unless stated</p>
             </div>
             <div className="divide-y">
               {[
-                { label: 'Gross Revenue (incl. VAT)',    value: core.grossRevenue,      indent: 0, bold: false, color: BRAND.caramel },
-                { label: 'Less: Output VAT',             value: -core.outputVat,        indent: 1, bold: false, color: undefined },
-                { label: 'Revenue (excl. VAT)',          value: core.revenueExclVat,    indent: 0, bold: true,  color: BRAND.coffee },
-                { label: 'Less: Cost of Goods Sold',     value: -core.cogs,             indent: 1, bold: false, color: undefined },
-                { label: 'GROSS PROFIT',                 value: core.grossProfit,       indent: 0, bold: true,  color: core.grossProfit > 0 ? BRAND.sage : BRAND.terracotta },
-                { label: `  Gross Margin`,               value: null,                   indent: 1, bold: false, pctVal: core.grossMargin, color: undefined },
-                { label: 'Less: Operating Expenses',     value: -core.totalExpensesExcl, indent: 1, bold: false, color: undefined },
-                { label: 'Less: Employee Costs',         value: -core.employeeCosts,    indent: 1, bold: false, color: undefined },
-                { label: 'NET PROFIT / (LOSS)',          value: core.netProfit,         indent: 0, bold: true,  color: core.netProfit > 0 ? BRAND.sage : BRAND.terracotta },
-                { label: `  Net Margin`,                 value: null,                   indent: 1, bold: false, pctVal: core.netMargin, color: undefined },
+                { label: 'Z-Print Revenue (incl. VAT)',      value: core.zRevenue,             indent: 0, bold: false, note: 'From till Z-print totals' },
+                { label: 'Less: Output VAT (÷ 1.15)',        value: -core.outputVat,           indent: 1, bold: false, note: '15% VAT on sales' },
+                { label: 'REVENUE (excl. VAT)',              value: core.revenueExclVat,       indent: 0, bold: true,  note: 'Trading revenue',            color: BRAND.caramel },
+                { label: 'Less: Cost of Goods Sold (COGS)', value: -core.cogs,                indent: 1, bold: false, note: 'Opening stock + purchases − closing stock (excl. VAT)' },
+                { label: 'GROSS PROFIT',                     value: core.grossProfit,          indent: 0, bold: true,  note: `Margin: ${pct(core.grossMargin)}`, color: core.grossProfit > 0 ? BRAND.sage : BRAND.terracotta },
+                { label: 'Less: Operating Expenses',         value: -core.totalExpensesExcl,   indent: 1, bold: false, note: 'Supplier invoices excl. VAT' },
+                { label: 'Less: Labour Cost (Wages & PAYE + UIF)', value: -core.totalLabourCost, indent: 1, bold: false, note: `Nett pay ${ZAR(core.nettPayTotal)} + PAYE ${ZAR(core.payeTotal)} + UIF ${ZAR(core.uifEmployeeTotal + core.uifEmployerTotal)}` },
+                { label: 'NET PROFIT BEFORE TAX',            value: core.netProfitBeforeTax,   indent: 0, bold: true,  note: `Margin: ${pct(core.netMargin)}`, color: core.netProfitBeforeTax > 0 ? BRAND.sage : BRAND.terracotta },
               ].map((row, i) => (
-                <div key={i} className={`flex items-center justify-between px-5 py-2.5 ${row.bold ? 'bg-muted/20' : ''}`}>
-                  <span className={`text-sm ${row.indent ? 'pl-4 text-muted-foreground' : 'font-semibold'}`}>{row.label}</span>
-                  <span className={`text-sm tabular-nums font-${row.bold ? 'bold' : 'medium'}`}
-                    style={{ color: row.value != null && row.color ? row.color : undefined }}>
-                    {'pctVal' in row && row.pctVal != null
-                      ? pct(row.pctVal)
-                      : row.value != null
-                        ? ZAR(row.value)
-                        : ''}
+                <div key={i} className={`flex items-start justify-between px-5 py-2.5 gap-4 ${row.bold ? 'bg-muted/20' : ''}`}>
+                  <div>
+                    <span className={`text-sm ${row.indent ? 'pl-4 text-muted-foreground' : 'font-semibold'}`}>{row.label}</span>
+                    {row.note && <p className="text-[10px] text-muted-foreground/70 pl-4">{row.note}</p>}
+                  </div>
+                  <span className={`text-sm tabular-nums shrink-0 font-${row.bold ? 'bold' : 'medium'}`}
+                    style={{ color: row.bold && 'color' in row ? (row as any).color : undefined }}>
+                    {ZAR(row.value)}
                   </span>
                 </div>
               ))}
             </div>
           </div>
 
-          {/* 12-month trend */}
+          {/* ── 12-month trend ── */}
           <div className="rounded-2xl border bg-card p-5">
-            <SectionHeader title="12-Month Financial Trend" sub="Revenue vs expenses vs net profit" accent={BRAND.caramel} />
+            <SectionHeader title="12-Month Financial Trend" sub="Revenue (excl. VAT) vs expenses vs net profit" accent={BRAND.caramel} />
             <ResponsiveContainer width="100%" height={260}>
               <BarChart data={monthlyTrend} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
@@ -681,18 +842,18 @@ export default function BusinessDashboard() {
                 <YAxis tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} tickLine={false} tickFormatter={ZARk} />
                 <Tooltip content={<ChartTooltip />} />
                 <Legend iconType="square" iconSize={8} wrapperStyle={{ fontSize: 11 }} />
-                <Bar dataKey="revenue"   name="Revenue"    fill={BRAND.caramel}    radius={[3,3,0,0]} maxBarSize={28} stackId="a" />
-                <Bar dataKey="expenses"  name="Expenses"   fill={BRAND.terracotta} radius={[0,0,0,0]} maxBarSize={28} />
-                <Bar dataKey="wages"     name="Wages"      fill={BRAND.wheat}      radius={[0,0,0,0]} maxBarSize={28} />
-                <Line type="monotone" dataKey="netProfit" name="Net Profit" stroke={BRAND.sage} strokeWidth={2.5} dot={{ r: 3, fill: BRAND.sage }} />
+                <Bar dataKey="revenue"   name="Revenue (excl. VAT)" fill={BRAND.caramel}    radius={[3,3,0,0]} maxBarSize={28} />
+                <Bar dataKey="expenses"  name="Expenses"            fill={BRAND.terracotta} radius={[0,0,0,0]} maxBarSize={28} />
+                <Bar dataKey="wages"     name="Labour Cost"         fill={BRAND.wheat}      radius={[0,0,0,0]} maxBarSize={28} />
+                <Line type="monotone" dataKey="netProfit" name="Net Profit BT" stroke={BRAND.sage} strokeWidth={2.5} dot={{ r: 3, fill: BRAND.sage }} />
               </BarChart>
             </ResponsiveContainer>
           </div>
 
-          {/* Payment split */}
+          {/* ── Payment split + Cost structure ── */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="rounded-2xl border bg-card p-5">
-              <SectionHeader title="Payment Method Split" sub="How customers are paying" accent={BRAND.coffee} />
+              <SectionHeader title="Payment Method Split" sub="How customers are paying (incl. VAT)" accent={BRAND.coffee} />
               <ResponsiveContainer width="100%" height={180}>
                 <PieChart>
                   <Pie data={paymentSplit} cx="50%" cy="50%" innerRadius={50} outerRadius={80} paddingAngle={3} dataKey="value" strokeWidth={0}>
@@ -707,20 +868,34 @@ export default function BusinessDashboard() {
                     <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-sm" style={{ background: PALETTE[i] }} /><span className="text-muted-foreground">{p.name}</span></div>
                     <div className="flex items-center gap-2">
                       <span>{ZAR(p.value)}</span>
-                      <span className="text-muted-foreground">{core.grossRevenue > 0 ? pct(p.value/core.grossRevenue*100) : '—'}</span>
+                      <span className="text-muted-foreground">{core.zRevenue > 0 ? pct(p.value/core.zRevenue*100) : '—'}</span>
                     </div>
                   </div>
                 ))}
+                <div className="pt-2 border-t flex justify-between text-xs font-semibold">
+                  <span className="text-muted-foreground">Z-Print Total</span>
+                  <span>{ZAR(core.zRevenue)}</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Actual Received</span>
+                  <span>{ZAR(core.actualReceived)}</span>
+                </div>
+                <div className="flex justify-between text-xs font-semibold" style={{ color: Math.abs(core.zVariance) < 1 ? BRAND.sage : BRAND.terracotta }}>
+                  <span>Variance (Z − Actual)</span>
+                  <span>{ZAR(core.zVariance)}</span>
+                </div>
               </div>
             </div>
 
             <div className="rounded-2xl border bg-card p-5">
-              <SectionHeader title="Cost Structure" sub="Where money is going" accent={BRAND.terracotta} />
+              <SectionHeader title="Cost Structure" sub="Where money is going (excl. VAT)" accent={BRAND.terracotta} />
               <div className="space-y-3 mt-1">
                 {[
-                  { label: 'Cost of Goods (COGS)', value: core.cogs, color: BRAND.coffee },
-                  { label: 'Operating Expenses',   value: core.totalExpensesExcl, color: BRAND.terracotta },
-                  { label: 'Employee Wages',        value: core.employeeCosts, color: BRAND.wheat },
+                  { label: 'Cost of Goods (COGS)',  value: core.cogs,               color: BRAND.coffee },
+                  { label: 'Operating Expenses',    value: core.totalExpensesExcl,  color: BRAND.terracotta },
+                  { label: 'Labour (Nett Pay)',      value: core.nettPayTotal,       color: BRAND.wheat },
+                  { label: 'PAYE',                  value: core.payeTotal,          color: BRAND.caramel },
+                  { label: 'UIF (Emp + Employer)',   value: core.uifEmployeeTotal + core.uifEmployerTotal, color: BRAND.sage },
                 ].map(item => {
                   const pctOfRev = core.revenueExclVat > 0 ? item.value / core.revenueExclVat * 100 : 0
                   return (
@@ -736,15 +911,107 @@ export default function BusinessDashboard() {
                   )
                 })}
                 <div className="rounded-xl bg-muted/30 p-3 mt-2 space-y-1 text-xs">
-                  <div className="flex justify-between"><span className="text-muted-foreground">Total outflows</span><span>{ZAR(core.cogs + core.totalExpensesExcl + core.employeeCosts)}</span></div>
-                  <div className="flex justify-between font-semibold border-t pt-1"><span>Net retained</span><span style={{ color: core.netProfit > 0 ? BRAND.sage : BRAND.terracotta }}>{ZAR(core.netProfit)}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">Total outflows</span><span>{ZAR(core.cogs + core.totalExpensesExcl + core.totalLabourCost)}</span></div>
+                  <div className="flex justify-between font-semibold border-t pt-1"><span>Net retained (before tax)</span><span style={{ color: core.netProfitBeforeTax > 0 ? BRAND.sage : BRAND.terracotta }}>{ZAR(core.netProfitBeforeTax)}</span></div>
                 </div>
               </div>
             </div>
           </div>
         </TabsContent>
 
-        {/* ── VAT TAB ── */}
+        {/* ══════════════════════════════════════════════════════════════════ */}
+        {/* REVENUE & Z TAB                                                    */}
+        {/* ══════════════════════════════════════════════════════════════════ */}
+        <TabsContent value="revenue" className="mt-5 space-y-5">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <KpiCard label="Z-Print Total (incl. VAT)" value={ZAR(core.zRevenue)} sub={`${core.sheetCount} days`} accent={BRAND.caramel} />
+            <KpiCard label="Revenue Excl. VAT" value={ZAR(core.revenueExclVat)} sub="Trading revenue" accent={BRAND.coffee} />
+            <KpiCard label="Actual Received" value={ZAR(core.actualReceived)} sub="Cash + Card + Accounts" accent={BRAND.wheat} />
+            <div className="rounded-2xl border bg-card p-4 relative overflow-hidden flex flex-col gap-1.5">
+              <div className="absolute top-0 left-0 right-0 h-0.5" style={{ background: Math.abs(core.zVariance) < 10 ? BRAND.sage : BRAND.terracotta }} />
+              <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium">Period Z Variance</p>
+              <p className={`font-bold tabular-nums text-xl ${Math.abs(core.zVariance) < 1 ? 'text-emerald-600' : Math.abs(core.zVariance) < 100 ? 'text-amber-600' : 'text-red-500'}`}>
+                {ZAR(core.zVariance)}
+              </p>
+              <p className="text-xs text-muted-foreground">{core.zVariance > 0 ? 'Z higher than received' : core.zVariance < 0 ? 'Received more than Z' : 'Perfectly balanced'}</p>
+            </div>
+          </div>
+
+          {/* Daily Z vs Actual chart */}
+          <div className="rounded-2xl border bg-card p-5">
+            <SectionHeader title="Daily Z-Print vs Actual Received" sub="Spot daily variances — Z incl. VAT" accent={BRAND.caramel} />
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={dailyRevenue} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                <XAxis dataKey="name" tick={{ fontSize: 9, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} tickLine={false} tickFormatter={ZARk} />
+                <Tooltip content={<ChartTooltip />} />
+                <Legend iconType="square" iconSize={8} wrapperStyle={{ fontSize: 11 }} />
+                <Bar dataKey="zTotal"  name="Z-Print"         fill={BRAND.caramel}    radius={[3,3,0,0]} maxBarSize={24} />
+                <Bar dataKey="actual"  name="Actual Received" fill={BRAND.coffee}     radius={[3,3,0,0]} maxBarSize={24} />
+                <Line type="monotone" dataKey="variance" name="Variance" stroke={BRAND.terracotta} strokeWidth={2} dot={{ r: 3 }} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Per-day Z vs Actual detail table */}
+          <div className="rounded-2xl border bg-card overflow-hidden">
+            <div className="px-5 py-3 border-b bg-muted/30">
+              <p className="text-sm font-semibold">Daily Z vs Actual Breakdown</p>
+              <p className="text-xs text-muted-foreground">Z-print compared to cash + card + accounts received</p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead><tr className="border-b bg-muted/20">
+                  <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Date</th>
+                  <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Z-Print</th>
+                  <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Cash</th>
+                  <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Card / YOCO</th>
+                  <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Accounts</th>
+                  <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Actual Total</th>
+                  <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Variance</th>
+                  <th className="px-4 py-2.5 font-medium text-muted-foreground">Status</th>
+                </tr></thead>
+                <tbody className="divide-y">
+                  {zActualDetail.map((d) => (
+                    <tr key={d.date} className="hover:bg-muted/20 transition-colors">
+                      <td className="px-4 py-2.5 font-medium">{d.date}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(d.z)}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{ZAR(d.cash)}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{ZAR(d.card)}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{ZAR(d.accounts)}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums font-semibold">{ZAR(d.actual)}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums font-semibold"
+                        style={{ color: Math.abs(d.variance) < 1 ? BRAND.sage : Math.abs(d.variance) < 50 ? '#B45309' : BRAND.terracotta }}>
+                        {ZAR(d.variance)}
+                      </td>
+                      <td className="px-4 py-2.5"><VarianceBadge variance={d.variance} /></td>
+                    </tr>
+                  ))}
+                  {zActualDetail.length === 0 && <tr><td colSpan={8} className="text-center py-8 text-muted-foreground">No cash-up data for this period.</td></tr>}
+                </tbody>
+                {zActualDetail.length > 0 && (
+                  <tfoot>
+                    <tr className="bg-muted/30 font-semibold border-t-2">
+                      <td className="px-4 py-2.5">TOTALS</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(core.zRevenue)}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(core.cashTotal)}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(core.cardTotal)}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(core.accountsTotal)}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(core.actualReceived)}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: Math.abs(core.zVariance) < 1 ? BRAND.sage : BRAND.terracotta }}>{ZAR(core.zVariance)}</td>
+                      <td className="px-4 py-2.5"><VarianceBadge variance={core.zVariance} /></td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          </div>
+        </TabsContent>
+
+        {/* ══════════════════════════════════════════════════════════════════ */}
+        {/* VAT TAB                                                            */}
+        {/* ══════════════════════════════════════════════════════════════════ */}
         <TabsContent value="vat" className="mt-5 space-y-5">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <KpiCard label="Output VAT (Charged on Sales)" value={ZAR(core.outputVat)} sub="VAT collected from customers" accent={BRAND.caramel} size="lg" />
@@ -788,8 +1055,8 @@ export default function BusinessDashboard() {
               <SectionHeader title="VAT Calculation Detail" sub="VAT-inclusive revenue at 15%" accent={BRAND.sage} />
               <div className="space-y-0 divide-y">
                 {[
-                  { label: 'Gross revenue (incl. VAT)',    value: core.grossRevenue,    note: 'From till Z-print' },
-                  { label: 'Revenue excl. VAT ÷ 1.15',    value: core.revenueExclVat,  note: 'Tax base' },
+                  { label: 'Z-Print revenue (incl. VAT)',  value: core.zRevenue,        note: 'From till Z-print' },
+                  { label: 'Revenue excl. VAT (÷ 1.15)',   value: core.revenueExclVat,  note: 'Tax base' },
                   { label: 'Output VAT (15%)',             value: core.outputVat,       note: 'Collected from customers' },
                   { label: 'Input VAT from expenses',      value: -core.inputVat,       note: 'Paid to VAT-registered suppliers' },
                   { label: 'VAT payable / (refundable)',   value: core.vatPayable,      note: core.vatPayable >= 0 ? 'Pay to SARS' : 'Claim from SARS', bold: true },
@@ -807,43 +1074,15 @@ export default function BusinessDashboard() {
                 ))}
               </div>
               <div className="mt-4 rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs text-amber-800">
-                <strong>Note:</strong> Output VAT assumes all sales are VAT-inclusive at 15%. Zero-rated items (like brown bread) should be excluded. Consult your accountant for the precise VAT201 return.
+                <strong>Note:</strong> Output VAT assumes all Z-print sales are VAT-inclusive at 15%. Zero-rated items (e.g. brown bread) should be excluded. Consult your accountant for the precise VAT201 return.
               </div>
             </div>
           </div>
         </TabsContent>
 
-        {/* ── REVENUE TAB ── */}
-        <TabsContent value="revenue" className="mt-5 space-y-5">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <KpiCard label="Total Revenue" value={ZAR(core.grossRevenue)} sub={`${core.sheetCount} days`} accent={BRAND.caramel} />
-            <KpiCard label="Avg Daily Revenue" value={ZAR(core.avgDailyRevenue)} sub="From till totals" accent={BRAND.coffee} />
-            <KpiCard label="Card / YOCO" value={ZAR(core.cardTotal)} sub={pct(core.grossRevenue > 0 ? core.cardTotal/core.grossRevenue*100 : 0)} accent={BRAND.wheat} />
-            <KpiCard label="Cash" value={ZAR(core.cashTotal)} sub={pct(core.grossRevenue > 0 ? core.cashTotal/core.grossRevenue*100 : 0)} accent={BRAND.sage} />
-          </div>
-
-          <div className="rounded-2xl border bg-card p-5">
-            <SectionHeader title="Daily Revenue" sub="Till total per trading day" accent={BRAND.caramel} />
-            <ResponsiveContainer width="100%" height={240}>
-              <AreaChart data={dailyRevenue} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="revGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%"  stopColor={BRAND.caramel} stopOpacity={0.3} />
-                    <stop offset="95%" stopColor={BRAND.caramel} stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-                <XAxis dataKey="name" tick={{ fontSize: 9, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
-                <YAxis tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} tickLine={false} tickFormatter={ZARk} />
-                <Tooltip content={<ChartTooltip />} />
-                {core.avgDailyRevenue > 0 && <ReferenceLine y={core.avgDailyRevenue} stroke={BRAND.coffee} strokeDasharray="4 2" label={{ value: 'Avg', fontSize: 9, fill: BRAND.coffee, position: 'right' }} />}
-                <Area type="monotone" dataKey="total" name="Revenue" stroke={BRAND.caramel} strokeWidth={2.5} fill="url(#revGrad)" dot={{ r: 3, fill: BRAND.caramel, stroke: '#fff', strokeWidth: 1.5 }} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </TabsContent>
-
-        {/* ── EXPENSES TAB ── */}
+        {/* ══════════════════════════════════════════════════════════════════ */}
+        {/* EXPENSES TAB                                                       */}
+        {/* ══════════════════════════════════════════════════════════════════ */}
         <TabsContent value="expenses" className="mt-5 space-y-5">
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <KpiCard label="Total Expenses (excl. VAT)" value={ZAR(core.totalExpensesExcl)} accent={BRAND.terracotta} />
@@ -880,19 +1119,49 @@ export default function BusinessDashboard() {
           </div>
         </TabsContent>
 
-        {/* ── STOCK & MARGIN ── */}
+        {/* ══════════════════════════════════════════════════════════════════ */}
+        {/* STOCK & COGS TAB                                                   */}
+        {/* ══════════════════════════════════════════════════════════════════ */}
         <TabsContent value="stock" className="mt-5 space-y-5">
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <KpiCard label="Opening Stock Value" value={ZAR(core.totalOpStockValue)} accent={BRAND.coffee} />
-            <KpiCard label="Closing Stock Value" value={ZAR(core.totalClStockValue)} accent={BRAND.wheat} />
-            <KpiCard label="Retail Revenue (Stock)" value={ZAR(core.stockRevenue)} accent={BRAND.caramel} />
-            <KpiCard label="Est. COGS" value={ZAR(core.cogs)} sub="Opening + received − closing" accent={BRAND.terracotta} />
+            <KpiCard label="Stock Purchases (excl. VAT)" value={ZAR(core.stockPurchases)} sub="New received × cost/item" accent={BRAND.wheat} />
+            <KpiCard label="Closing Stock Value" value={ZAR(core.totalClStockValue)} accent={BRAND.caramel} />
+            <KpiCard label="COGS" value={ZAR(core.cogs)} sub="Opening + Purchases − Closing" trendLabel={core.revenueExclVat > 0 ? `${pct(core.cogs/core.revenueExclVat*100)} of revenue` : undefined} accent={BRAND.terracotta} />
           </div>
 
+          {/* COGS formula explainer */}
+          <div className="rounded-2xl border bg-card overflow-hidden">
+            <div className="px-5 py-3 border-b bg-muted/30">
+              <p className="text-sm font-semibold">COGS Calculation</p>
+              <p className="text-xs text-muted-foreground">Opening Stock + Purchases − Closing Stock = Cost of Goods Sold</p>
+            </div>
+            <div className="divide-y">
+              {[
+                { label: 'Opening Stock Value',       value: core.totalOpStockValue,  note: 'Stock on hand at start of period (excl. VAT)' },
+                { label: 'Plus: Stock Purchases',     value: core.stockPurchases,     note: 'New received × cost per item (excl. VAT)' },
+                { label: 'Less: Closing Stock Value', value: -core.totalClStockValue, note: 'Stock remaining at end of period (excl. VAT)' },
+                { label: 'COST OF GOODS SOLD',        value: core.cogs,               note: `= ${pct(core.revenueExclVat > 0 ? core.cogs/core.revenueExclVat*100 : 0)} of revenue excl. VAT`, bold: true },
+              ].map((row, i) => (
+                <div key={i} className={`flex items-start justify-between px-5 py-2.5 gap-4 ${row.bold ? 'bg-muted/20' : ''}`}>
+                  <div>
+                    <p className={`text-sm ${row.bold ? 'font-bold' : 'text-muted-foreground pl-4'}`}>{row.label}</p>
+                    <p className="text-[10px] text-muted-foreground/70 pl-4">{row.note}</p>
+                  </div>
+                  <span className={`text-sm tabular-nums shrink-0 ${row.bold ? 'font-bold' : 'font-medium'}`}
+                    style={{ color: row.bold ? BRAND.coffee : undefined }}>
+                    {ZAR(row.value)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Category table */}
           <div className="rounded-2xl border bg-card overflow-hidden">
             <div className="px-5 py-3 border-b bg-muted/30">
               <p className="text-sm font-semibold">Category Gross Profit Analysis</p>
-              <p className="text-xs text-muted-foreground">Revenue vs cost of goods by category</p>
+              <p className="text-xs text-muted-foreground">COGS = Opening + Purchases − Closing per category</p>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
@@ -926,52 +1195,163 @@ export default function BusinessDashboard() {
           </div>
         </TabsContent>
 
-        {/* ── STAFF COSTS ── */}
+        {/* ══════════════════════════════════════════════════════════════════ */}
+        {/* STAFF & PAYE TAB                                                   */}
+        {/* ══════════════════════════════════════════════════════════════════ */}
         <TabsContent value="staff" className="mt-5 space-y-5">
+
+          {/* ── Summary KPIs ── */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <KpiCard label="Total Nett Pay" value={ZAR(core.employeeCosts)} sub={`${filteredPayslips.length} payslips`} accent={BRAND.caramel} />
-            <KpiCard label="UIF (Employee)" value={ZAR(core.uifTotal)} sub="1% of earnings" accent={BRAND.wheat} />
-            <KpiCard label="Wages as % of Revenue" value={core.revenueExclVat > 0 ? pct(core.employeeCosts/core.revenueExclVat*100) : '—'} trend={core.revenueExclVat > 0 && core.employeeCosts/core.revenueExclVat < 0.30 ? 'good-down' : 'bad-up'} trendLabel={core.revenueExclVat > 0 && core.employeeCosts/core.revenueExclVat < 0.30 ? 'Within target' : 'Above 30%'} accent={BRAND.coffee} />
-            <KpiCard label="Avg Pay per Payslip" value={filteredPayslips.length > 0 ? ZAR(core.employeeCosts/filteredPayslips.length) : '—'} accent={BRAND.sage} />
+            <KpiCard label="Gross Earnings" value={ZAR(core.grossEarningsTotal)} sub="Total before deductions" accent={BRAND.caramel} />
+            <KpiCard label="Nett Pay (Take-home)" value={ZAR(core.nettPayTotal)} sub={`${filteredPayslips.length} payslips`} accent={BRAND.wheat} />
+            <KpiCard label="PAYE (Income Tax)" value={ZAR(core.payeTotal)} sub="Employee income tax" accent={BRAND.terracotta} />
+            <KpiCard label="UIF" value={ZAR(core.uifEmployeeTotal + core.uifEmployerTotal)} sub={`Emp: ${ZAR(core.uifEmployeeTotal)} · Emr: ${ZAR(core.uifEmployerTotal)}`} accent={BRAND.coffee} />
           </div>
 
-          {employeeBreakdown.length > 0 ? (
-            <div className="rounded-2xl border bg-card p-5">
-              <SectionHeader title="Cost by Employee" sub="Nett pay for period" accent={BRAND.wheat} />
-              <ResponsiveContainer width="100%" height={employeeBreakdown.length * 40 + 30}>
-                <BarChart data={employeeBreakdown} layout="vertical" margin={{ top: 0, right: 60, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" />
-                  <XAxis type="number" axisLine={false} tickLine={false} tickFormatter={ZARk} tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} />
-                  <YAxis type="category" dataKey="name" width={140} axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }} />
-                  <Tooltip content={<ChartTooltip />} />
-                  <Bar dataKey="total" name="Nett pay" radius={[0,5,5,0]} maxBarSize={28}>
-                    {employeeBreakdown.map((_, i) => <Cell key={i} fill={PALETTE[i % PALETTE.length]} />)}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-              <div className="mt-4 space-y-1.5">
-                {employeeBreakdown.map((e, i) => (
-                  <div key={e.name} className="flex items-center gap-3 py-1.5 border-b border-border/40 last:border-0">
-                    <div className="w-2 h-2 rounded-sm shrink-0" style={{ background: PALETTE[i % PALETTE.length] }} />
-                    <span className="flex-1 text-sm">{e.name}</span>
-                    <span className="text-sm font-semibold tabular-nums">{ZAR(e.total)}</span>
-                    <span className="text-xs text-muted-foreground w-12 text-right">{core.employeeCosts > 0 ? pct(e.total/core.employeeCosts*100) : '—'}</span>
+          {/* ── Total cost to company ── */}
+          <div className="rounded-2xl border bg-card overflow-hidden">
+            <div className="px-5 py-4 border-b bg-muted/30">
+              <p className="text-sm font-semibold">Labour Cost Summary</p>
+              <p className="text-xs text-muted-foreground">Full cost breakdown including PAYE and UIF</p>
+            </div>
+            <div className="divide-y">
+              {[
+                { label: 'Gross Earnings (before deductions)', value: core.grossEarningsTotal, note: 'Total earnings per payslips', indent: false },
+                { label: 'Less: PAYE (employee income tax)',    value: -core.payeTotal,          note: 'Withheld by employer, paid to SARS', indent: true },
+                { label: 'Less: UIF (employee contribution)',  value: -core.uifEmployeeTotal,   note: '1% of earnings', indent: true },
+                { label: 'Nett Pay (employee take-home)',       value: core.nettPayTotal,        note: 'What employees receive', indent: false, bold: false },
+                { label: 'Plus: UIF (employer contribution)',   value: core.uifEmployerTotal,    note: '1% matched by employer — additional cost', indent: true },
+                { label: 'TOTAL LABOUR COST TO COMPANY',       value: core.totalLabourCost,     note: 'Nett pay + PAYE + UIF (both sides)', indent: false, bold: true },
+              ].map((row, i) => (
+                <div key={i} className={`flex items-start justify-between px-5 py-2.5 gap-4 ${row.bold ? 'bg-muted/20' : ''}`}>
+                  <div>
+                    <p className={`text-sm ${row.indent ? 'pl-4 text-muted-foreground' : row.bold ? 'font-bold' : 'font-medium'}`}>{row.label}</p>
+                    <p className="text-[10px] text-muted-foreground/70 pl-4">{row.note}</p>
                   </div>
-                ))}
+                  <span className={`text-sm tabular-nums shrink-0 ${row.bold ? 'font-bold' : 'font-medium'}`}
+                    style={{ color: row.bold ? BRAND.coffee : undefined }}>
+                    {ZAR(row.value)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* ── PAYE & UIF monthly summary ── */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="rounded-2xl border bg-card p-4 space-y-3">
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">PAYE Summary</p>
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between"><span className="text-muted-foreground">Total PAYE withheld</span><span className="font-semibold tabular-nums">{ZAR(core.payeTotal)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">As % of gross earnings</span><span className="font-semibold">{core.grossEarningsTotal > 0 ? pct(core.payeTotal/core.grossEarningsTotal*100) : '—'}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Payslips included</span><span className="font-semibold">{filteredPayslips.length}</span></div>
+              </div>
+              <div className="rounded-lg bg-amber-50 border border-amber-200 p-2 text-[10px] text-amber-800">
+                PAYE must be paid to SARS by the 7th of the following month (EMP201).
+              </div>
+            </div>
+            <div className="rounded-2xl border bg-card p-4 space-y-3">
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">UIF Summary</p>
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between"><span className="text-muted-foreground">Employee UIF (1%)</span><span className="font-semibold tabular-nums">{ZAR(core.uifEmployeeTotal)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Employer UIF (1%)</span><span className="font-semibold tabular-nums">{ZAR(core.uifEmployerTotal)}</span></div>
+                <div className="flex justify-between border-t pt-2 font-semibold"><span>Total UIF to pay</span><span className="tabular-nums">{ZAR(core.uifEmployeeTotal + core.uifEmployerTotal)}</span></div>
+              </div>
+            </div>
+            <div className="rounded-2xl border bg-card p-4 space-y-3">
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">SARS Statutory Payments</p>
+              <div className="space-y-2 text-sm">
+                <div className="flex justify-between"><span className="text-muted-foreground">PAYE</span><span className="font-semibold tabular-nums">{ZAR(core.payeTotal)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">UIF (total)</span><span className="font-semibold tabular-nums">{ZAR(core.uifEmployeeTotal + core.uifEmployerTotal)}</span></div>
+                <div className="flex justify-between border-t pt-2 font-bold" style={{ color: BRAND.terracotta }}>
+                  <span>Total due to SARS</span>
+                  <span className="tabular-nums">{ZAR(core.payeTotal + core.uifEmployeeTotal + core.uifEmployerTotal)}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* ── Per-employee breakdown ── */}
+          {employeeBreakdown.length > 0 ? (
+            <div className="rounded-2xl border bg-card overflow-hidden">
+              <div className="px-5 py-3 border-b bg-muted/30">
+                <p className="text-sm font-semibold">Per-Employee Breakdown</p>
+                <p className="text-xs text-muted-foreground">Nett pay · PAYE · UIF · Total cost to company</p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead><tr className="border-b bg-muted/20">
+                    <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Employee</th>
+                    <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Gross Earnings</th>
+                    <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Nett Pay</th>
+                    <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">PAYE</th>
+                    <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">UIF (Emp)</th>
+                    <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">UIF (Emr)</th>
+                    <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Total Cost</th>
+                    <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">% of Labour</th>
+                  </tr></thead>
+                  <tbody className="divide-y">
+                    {employeeBreakdown.map((e, i) => (
+                      <tr key={e.name} className="hover:bg-muted/20 transition-colors">
+                        <td className="px-4 py-2.5 font-medium">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-sm shrink-0" style={{ background: PALETTE[i % PALETTE.length] }} />
+                            {e.name}
+                          </div>
+                        </td>
+                        <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{ZAR(e.gross)}</td>
+                        <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(e.nett)}</td>
+                        <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: e.paye > 0 ? BRAND.terracotta : undefined }}>{ZAR(e.paye)}</td>
+                        <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{ZAR(e.uifEmp)}</td>
+                        <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{ZAR(e.uifEmr)}</td>
+                        <td className="px-4 py-2.5 text-right tabular-nums font-semibold">{ZAR(e.totalCost)}</td>
+                        <td className="px-4 py-2.5 text-right text-muted-foreground">{core.totalLabourCost > 0 ? pct(e.totalCost/core.totalLabourCost*100) : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="bg-muted/30 font-semibold border-t-2">
+                      <td className="px-4 py-2.5">TOTALS</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(core.grossEarningsTotal)}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(core.nettPayTotal)}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(core.payeTotal)}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(core.uifEmployeeTotal)}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(core.uifEmployerTotal)}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(core.totalLabourCost)}</td>
+                      <td className="px-4 py-2.5 text-right">100%</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+              <div className="p-4">
+                <ResponsiveContainer width="100%" height={employeeBreakdown.length * 40 + 30}>
+                  <BarChart data={employeeBreakdown} layout="vertical" margin={{ top: 0, right: 60, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="hsl(var(--border))" />
+                    <XAxis type="number" axisLine={false} tickLine={false} tickFormatter={ZARk} tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} />
+                    <YAxis type="category" dataKey="name" width={130} axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }} />
+                    <Tooltip content={<ChartTooltip />} />
+                    <Legend iconType="square" iconSize={8} wrapperStyle={{ fontSize: 11 }} />
+                    <Bar dataKey="nett"   name="Nett Pay" stackId="a" fill={BRAND.wheat}      radius={[0,0,0,0]} maxBarSize={24} />
+                    <Bar dataKey="paye"   name="PAYE"     stackId="a" fill={BRAND.terracotta} radius={[0,0,0,0]} maxBarSize={24} />
+                    <Bar dataKey="uifEmp" name="UIF (Emp)" stackId="a" fill={BRAND.sage}      radius={[0,3,3,0]} maxBarSize={24} />
+                  </BarChart>
+                </ResponsiveContainer>
               </div>
             </div>
           ) : (
             <div className="rounded-2xl border bg-card p-8 flex flex-col items-center gap-2 text-muted-foreground">
               <Users className="w-10 h-10 opacity-20" />
               <p className="text-sm">No payslips recorded for this period.</p>
+              <p className="text-xs opacity-70">Add payslips with PAYE and UIF values to see the full breakdown.</p>
             </div>
           )}
         </TabsContent>
 
-        {/* ── HEALTH CHECK ── */}
+        {/* ══════════════════════════════════════════════════════════════════ */}
+        {/* HEALTH CHECK TAB                                                   */}
+        {/* ══════════════════════════════════════════════════════════════════ */}
         <TabsContent value="health" className="mt-5 space-y-5">
 
-          {/* Health indicators */}
           <div className="rounded-2xl border bg-card overflow-hidden">
             <div className="px-5 py-3 border-b bg-muted/30">
               <p className="text-sm font-semibold">Business Health Indicators</p>
@@ -1011,8 +1391,9 @@ export default function BusinessDashboard() {
                     tag: 'High margin',
                   })) : [{ title: 'No high-margin categories yet', detail: 'Stock counts needed for margin data', tag: '—' }]),
                   ...(core.grossMargin > 30 ? [{ title: 'Gross margin is healthy', detail: `${pct(core.grossMargin)} — above the 30% benchmark`, tag: 'Margin' }] : []),
-                  ...(core.netProfit > 0 ? [{ title: 'Business is profitable', detail: `Net profit of ${ZAR(core.netProfit)} this period`, tag: 'Profit' }] : []),
-                  ...(core.cardTotal > core.cashTotal ? [{ title: 'Strong card payment adoption', detail: `${pct(core.cardTotal/core.grossRevenue*100)} of sales via card/YOCO`, tag: 'Payments' }] : []),
+                  ...(core.netProfitBeforeTax > 0 ? [{ title: 'Business is profitable', detail: `Net profit before tax of ${ZAR(core.netProfitBeforeTax)} this period`, tag: 'Profit' }] : []),
+                  ...(Math.abs(core.zVariance) < 10 ? [{ title: 'Z-print closely matches actual', detail: `Variance of only ${ZAR(Math.abs(core.zVariance))} — excellent cash-up accuracy`, tag: 'Z Balance' }] : []),
+                  ...(core.cardTotal > core.cashTotal ? [{ title: 'Strong card payment adoption', detail: `${pct(core.cardTotal/core.zRevenue*100)} of sales via card/YOCO`, tag: 'Payments' }] : []),
                 ].slice(0, 5).map((item, i) => (
                   <div key={i} className="px-4 py-3">
                     <div className="flex items-start justify-between gap-2">
@@ -1035,15 +1416,15 @@ export default function BusinessDashboard() {
                   ...(worstCategories.length > 0 ? worstCategories.map(c => ({
                     title: c.name,
                     detail: `Only ${pct(c.margin)} gross margin — below 20% benchmark`,
-                    tag: 'Low margin',
-                    severity: 'bad',
+                    tag: 'Low margin', severity: 'bad',
                   })) : []),
-                  ...(core.netProfit < 0 ? [{ title: 'Business is running at a loss', detail: `Net loss of ${ZAR(Math.abs(core.netProfit))} this period`, tag: 'Loss', severity: 'bad' }] : []),
-                  ...(core.unpaidExpenses > core.grossRevenue * 0.15 ? [{ title: 'High unpaid supplier invoices', detail: `${ZAR(core.unpaidExpenses)} outstanding — above 15% of revenue`, tag: 'Payables', severity: 'warning' }] : []),
-                  ...(core.revenueExclVat > 0 && core.employeeCosts/core.revenueExclVat > 0.35 ? [{ title: 'Wage costs above 35% of revenue', detail: `Wages are ${pct(core.employeeCosts/core.revenueExclVat*100)} of revenue — consider staffing review`, tag: 'Wages', severity: 'warning' }] : []),
-                  ...(core.vatPayable > core.grossRevenue * 0.05 ? [{ title: 'Significant VAT liability', detail: `${ZAR(core.vatPayable)} owed to SARS — ensure funds reserved`, tag: 'VAT', severity: 'warning' }] : []),
+                  ...(core.netProfitBeforeTax < 0 ? [{ title: 'Business is running at a loss', detail: `Net loss of ${ZAR(Math.abs(core.netProfitBeforeTax))} this period`, tag: 'Loss', severity: 'bad' }] : []),
+                  ...(Math.abs(core.zVariance) > 100 ? [{ title: 'Large Z vs actual variance', detail: `${ZAR(Math.abs(core.zVariance))} difference — investigate cash-up`, tag: 'Z Variance', severity: 'bad' }] : []),
+                  ...(core.unpaidExpenses > core.zRevenue * 0.15 ? [{ title: 'High unpaid supplier invoices', detail: `${ZAR(core.unpaidExpenses)} outstanding — above 15% of revenue`, tag: 'Payables', severity: 'warning' }] : []),
+                  ...(core.revenueExclVat > 0 && core.totalLabourCost/core.revenueExclVat > 0.35 ? [{ title: 'Labour costs above 35% of revenue', detail: `Labour is ${pct(core.totalLabourCost/core.revenueExclVat*100)} of revenue — consider review`, tag: 'Labour', severity: 'warning' }] : []),
+                  ...(core.vatPayable > core.zRevenue * 0.05 ? [{ title: 'Significant VAT liability', detail: `${ZAR(core.vatPayable)} owed to SARS — ensure funds reserved`, tag: 'VAT', severity: 'warning' }] : []),
                   ...(filteredSheets.length === 0 ? [{ title: 'No cash-up data for this period', detail: 'Revenue figures require daily cash-up sheets', tag: 'Data', severity: 'warning' }] : []),
-                ].slice(0, 5).map((item, i) => (
+                ].slice(0, 6).map((item, i) => (
                   <div key={i} className="px-4 py-3">
                     <div className="flex items-start justify-between gap-2">
                       <p className="text-sm font-medium">{item.title}</p>
@@ -1052,12 +1433,7 @@ export default function BusinessDashboard() {
                     <p className="text-xs text-muted-foreground mt-0.5">{item.detail}</p>
                   </div>
                 ))}
-                {[
-                  ...worstCategories,
-                  ...(core.netProfit < 0 ? ['loss'] : []),
-                  ...(core.unpaidExpenses > core.grossRevenue * 0.15 ? ['unpaid'] : []),
-                  ...(core.revenueExclVat > 0 && core.employeeCosts/core.revenueExclVat > 0.35 ? ['wages'] : []),
-                ].length === 0 && (
+                {worstCategories.length === 0 && core.netProfitBeforeTax >= 0 && Math.abs(core.zVariance) <= 100 && (
                   <div className="px-4 py-8 text-center text-muted-foreground">
                     <CheckCircle2 className="w-8 h-8 text-emerald-500 opacity-60 mx-auto mb-2" />
                     <p className="text-sm">No critical issues found for this period.</p>
@@ -1067,7 +1443,7 @@ export default function BusinessDashboard() {
             </div>
           </div>
 
-          {/* Full financial summary table */}
+          {/* Full financial summary */}
           <div className="rounded-2xl border bg-card overflow-hidden">
             <div className="px-5 py-3 border-b bg-muted/30">
               <p className="text-sm font-semibold">Full Financial Summary</p>
@@ -1076,29 +1452,38 @@ export default function BusinessDashboard() {
               <table className="w-full text-xs">
                 <tbody className="divide-y">
                   {[
-                    { label: 'REVENUE', value: '', section: true },
-                    { label: 'Gross Revenue (incl. VAT)',    value: ZAR(core.grossRevenue) },
-                    { label: 'Output VAT (15%)',             value: `(${ZAR(core.outputVat)})` },
-                    { label: 'Revenue (excl. VAT)',          value: ZAR(core.revenueExclVat), bold: true },
-                    { label: 'COSTS', value: '', section: true },
-                    { label: 'Cost of Goods Sold (est.)',    value: ZAR(core.cogs) },
-                    { label: 'GROSS PROFIT',                 value: ZAR(core.grossProfit), bold: true },
-                    { label: 'Gross Margin',                 value: pct(core.grossMargin) },
-                    { label: 'OPERATING EXPENSES', value: '', section: true },
-                    { label: 'Supplier Expenses (excl. VAT)', value: ZAR(core.totalExpensesExcl) },
-                    { label: 'Employee Costs (nett pay)',    value: ZAR(core.employeeCosts) },
-                    { label: 'Total Operating Costs',        value: ZAR(core.totalExpensesExcl + core.employeeCosts), bold: true },
-                    { label: 'PROFIT', value: '', section: true },
-                    { label: 'Net Profit / (Loss)',          value: ZAR(core.netProfit), bold: true, color: core.netProfit > 0 ? BRAND.sage : BRAND.terracotta },
-                    { label: 'Net Margin',                   value: pct(core.netMargin) },
-                    { label: 'VAT', value: '', section: true },
-                    { label: 'Output VAT',                   value: ZAR(core.outputVat) },
-                    { label: 'Input VAT (recoverable)',      value: `(${ZAR(core.inputVat)})` },
-                    { label: 'VAT Payable / (Refundable)',   value: ZAR(core.vatPayable), bold: true, color: core.vatPayable >= 0 ? BRAND.terracotta : BRAND.sage },
-                    { label: 'OTHER', value: '', section: true },
-                    { label: 'Unpaid Supplier Invoices',     value: ZAR(core.unpaidExpenses) },
-                    { label: 'Closing Stock Value',          value: ZAR(core.totalClStockValue) },
-                    { label: 'UIF (Employee Contribution)',  value: ZAR(core.uifTotal) },
+                    { label: 'REVENUE',                              value: '',                             section: true },
+                    { label: 'Z-Print Revenue (incl. VAT)',          value: ZAR(core.zRevenue) },
+                    { label: 'Output VAT (÷ 1.15)',                  value: `(${ZAR(core.outputVat)})` },
+                    { label: 'Revenue (excl. VAT)',                  value: ZAR(core.revenueExclVat),       bold: true },
+                    { label: 'COST OF GOODS SOLD',                   value: '',                             section: true },
+                    { label: 'Opening Stock Value',                  value: ZAR(core.totalOpStockValue) },
+                    { label: 'Plus: Stock Purchases',                value: ZAR(core.stockPurchases) },
+                    { label: 'Less: Closing Stock Value',            value: `(${ZAR(core.totalClStockValue)})` },
+                    { label: 'COGS',                                 value: ZAR(core.cogs),                 bold: true },
+                    { label: 'GROSS PROFIT',                         value: ZAR(core.grossProfit),          bold: true, color: core.grossProfit > 0 ? BRAND.sage : BRAND.terracotta },
+                    { label: 'Gross Margin',                         value: pct(core.grossMargin) },
+                    { label: 'OPERATING EXPENSES',                   value: '',                             section: true },
+                    { label: 'Supplier Expenses (excl. VAT)',        value: ZAR(core.totalExpensesExcl) },
+                    { label: 'LABOUR COSTS',                         value: '',                             section: true },
+                    { label: 'Nett Pay',                             value: ZAR(core.nettPayTotal) },
+                    { label: 'PAYE',                                 value: ZAR(core.payeTotal) },
+                    { label: 'UIF (Employee)',                       value: ZAR(core.uifEmployeeTotal) },
+                    { label: 'UIF (Employer)',                       value: ZAR(core.uifEmployerTotal) },
+                    { label: 'Total Labour Cost',                    value: ZAR(core.totalLabourCost),      bold: true },
+                    { label: 'PROFIT',                               value: '',                             section: true },
+                    { label: 'Net Profit Before Tax',                value: ZAR(core.netProfitBeforeTax),   bold: true, color: core.netProfitBeforeTax > 0 ? BRAND.sage : BRAND.terracotta },
+                    { label: 'Net Margin',                           value: pct(core.netMargin) },
+                    { label: 'VAT & STATUTORY',                      value: '',                             section: true },
+                    { label: 'Output VAT',                           value: ZAR(core.outputVat) },
+                    { label: 'Input VAT (recoverable)',              value: `(${ZAR(core.inputVat)})` },
+                    { label: 'VAT Payable / (Refundable)',           value: ZAR(core.vatPayable),           bold: true, color: core.vatPayable >= 0 ? BRAND.terracotta : BRAND.sage },
+                    { label: 'PAYE due to SARS',                     value: ZAR(core.payeTotal) },
+                    { label: 'UIF due to SARS',                      value: ZAR(core.uifEmployeeTotal + core.uifEmployerTotal) },
+                    { label: 'OTHER',                                value: '',                             section: true },
+                    { label: 'Z vs Actual Variance',                 value: ZAR(core.zVariance),            color: Math.abs(core.zVariance) < 10 ? BRAND.sage : BRAND.terracotta },
+                    { label: 'Unpaid Supplier Invoices',             value: ZAR(core.unpaidExpenses) },
+                    { label: 'Closing Stock Value',                  value: ZAR(core.totalClStockValue) },
                   ].map((row, i) => row.section
                     ? <tr key={i} className="bg-muted/30"><td colSpan={2} className="px-5 py-2 text-[10px] uppercase tracking-widest font-semibold text-muted-foreground">{row.label}</td></tr>
                     : <tr key={i} className="hover:bg-muted/10">
