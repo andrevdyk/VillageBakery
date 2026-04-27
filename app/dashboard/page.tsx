@@ -79,7 +79,7 @@ interface RetailCount {
 interface Payslip {
   payslip_id: number
   employee_id: number
-  pay_date: string | null        // period end date (e.g. 2026-03-07) — the "work period" date
+  pay_date: string | null
   period_from: string
   period_to: string
   payslip_type: string | null
@@ -94,18 +94,17 @@ interface Payslip {
   bonus: string | number | null
   total_earnings: number
   uif_employee: number
-  paye: number | null            // PAYE — null/0 for workers below threshold
-  uif_employer?: number | null   // employer UIF contribution (if tracked separately)
+  paye: number | null
+  uif_employer?: number | null
   other_deductions: string | number | null
   other_deductions_label: string | null
   total_deductions: number
   nett_pay: number
-  payout: string | number | null // actual cash handed over (rounded)
+  payout: string | number | null
   notes: string | null
   vb_employee?: { full_name: string } | null
 }
 
-// ─── Employee (for birthday & PAYE lookups) ──────────────────────────────────
 interface Employee {
   employee_id: number
   full_name: string
@@ -115,9 +114,6 @@ interface Employee {
 }
 
 // ─── PAYE Tax Table (hardcoded — SARS 2025/2026) ─────────────────────────────
-// Monthly remuneration brackets → monthly PAYE (under-65 column only)
-// Weekly payslips = no PAYE. Monthly payslips = check table.
-// If remuneration < lowest bracket (R8,111) → PAYE = 0
 const PAYE_TABLE: Array<{ from: number; to: number; under65: number; age65to74: number; age75plus: number }> = [
   { from: 8111, to: 8211,  under65: 0,   age65to74: 0, age75plus: 0 },
   { from: 8212, to: 8312,  under65: 2,   age65to74: 0, age75plus: 0 },
@@ -139,20 +135,17 @@ const PAYE_TABLE: Array<{ from: number; to: number; under65: number; age65to74: 
   { from: 9828, to: 9928,  under65: 293, age65to74: 0, age75plus: 0 },
 ]
 
-// ── Parse birth date from SA ID number (first 6 digits = YYMMDD) ──
 function birthDateFromId(idNumber: string | null): Date | null {
   if (!idNumber || idNumber.length < 6) return null
   const yy = parseInt(idNumber.slice(0, 2), 10)
-  const mm = parseInt(idNumber.slice(2, 4), 10) - 1   // 0-indexed
+  const mm = parseInt(idNumber.slice(2, 4), 10) - 1
   const dd = parseInt(idNumber.slice(4, 6), 10)
   if (isNaN(yy) || isNaN(mm) || isNaN(dd)) return null
-  // SA IDs: 00–24 = 2000s, 25–99 = 1900s
   const fullYear = yy <= 24 ? 2000 + yy : 1900 + yy
   const d = new Date(fullYear, mm, dd)
   return isNaN(d.getTime()) ? null : d
 }
 
-// ── Age in years at a given reference date ──
 function ageAtDate(birthDate: Date, refDate: Date): number {
   let age = refDate.getFullYear() - birthDate.getFullYear()
   const m = refDate.getMonth() - birthDate.getMonth()
@@ -160,18 +153,14 @@ function ageAtDate(birthDate: Date, refDate: Date): number {
   return age
 }
 
-// ── Look up monthly PAYE based on remuneration and age ──
-// Returns 0 if weekly payslip, or if remuneration is below the threshold
 function lookupPaye(monthlyRemuneration: number, ageYears: number): number {
   const row = PAYE_TABLE.find(r => monthlyRemuneration >= r.from && monthlyRemuneration <= r.to)
-  if (!row) return 0  // below lowest bracket or above highest (extend table as needed)
+  if (!row) return 0
   if (ageYears >= 75) return row.age75plus
   if (ageYears >= 65) return row.age65to74
   return row.under65
 }
 
-// ── Calculate PAYE for a payslip ──
-// Only monthly payslips qualify; weekly = 0
 function calcPayslipPaye(
   totalEarnings: number,
   payslipType: string | null,
@@ -185,8 +174,6 @@ function calcPayslipPaye(
   return lookupPaye(totalEarnings, age)
 }
 
-// ── Birthday utilities ──
-// Returns how many days until an employee's next birthday (0 = today)
 function daysUntilBirthday(birthDate: Date, today: Date): number {
   const thisYear = new Date(today.getFullYear(), birthDate.getMonth(), birthDate.getDate())
   if (thisYear < today) thisYear.setFullYear(today.getFullYear() + 1)
@@ -206,7 +193,15 @@ const pct = (n: number | null | undefined) =>
 
 function parseNum(v: string | number | null | undefined): number {
   if (v == null) return 0
-  return parseFloat(String(v)) || 0
+  return parseFloat(String(v).replace(/,/g, '')) || 0
+}
+
+// ─── Float-adjusted cash helper ───────────────────────────────────────────────
+// Each day the till starts with a R1000 float which is included in total_cash.
+// If total_cash is 0 (no cash taken), do not deduct anything.
+const TILL_FLOAT = 1000
+function adjustedCash(rawCash: number): number {
+  return rawCash === 0 ? 0 : rawCash - TILL_FLOAT
 }
 
 function sheetDate(s: CashUpSheet): Date {
@@ -350,8 +345,6 @@ export default function BusinessDashboard() {
   const [filterFY,      setFilterFY]      = useState(now.getMonth() >= 2 ? now.getFullYear() : now.getFullYear() - 1)
   const [customFrom,    setCustomFrom]    = useState('')
   const [customTo,      setCustomTo]      = useState('')
-  // payslipDateMode: which date field to use when bucketing payslips into a period
-  // 'pay_date' = the payslip date (primary) · 'period_to' = the work period end date
   const [payslipDateMode, setPayslipDateMode] = useState<'pay_date' | 'period_to'>('pay_date')
 
   const range = useMemo(() =>
@@ -395,7 +388,6 @@ export default function BusinessDashboard() {
   )
   const filteredPayslips = useMemo(() => {
     return payslips.filter(p => {
-      // pay_date = the payslip date (primary), falling back to period_to
       const dateStr = payslipDateMode === 'pay_date'
         ? (p.pay_date ?? p.period_to)
         : p.period_to
@@ -404,122 +396,76 @@ export default function BusinessDashboard() {
   }, [payslips, range, payslipDateMode])
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // ── CORE CALCULATIONS (CORRECTED) ────────────────────────────────────────────
+  // ── CORE CALCULATIONS ────────────────────────────────────────────────────────
   // ─────────────────────────────────────────────────────────────────────────────
 
   const core = useMemo(() => {
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // 1. REVENUE
-    // Rule: Revenue = till_total_z_print ÷ 1.15  (Z-print is always incl. VAT)
-    // ══════════════════════════════════════════════════════════════════════════
-    const zRevenue        = filteredSheets.reduce((s, r) => s + parseNum(r.till_total_z_print), 0)  // incl. VAT
-    const revenueExclVat  = zRevenue / 1.15                                                          // excl. VAT — the trading revenue
-    const outputVat       = zRevenue - revenueExclVat                                                // VAT collected
+    // ── 1. REVENUE ──
+    const zRevenue        = filteredSheets.reduce((s, r) => s + parseNum(r.till_total_z_print), 0)
+    const revenueExclVat  = zRevenue / 1.15
+    const outputVat       = zRevenue - revenueExclVat
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // 2. ACTUAL REVENUE RECEIVED (cash + card + accounts)
-    //    Used for Z vs Actual variance check only
-    // ══════════════════════════════════════════════════════════════════════════
-    const cashTotal       = filteredSheets.reduce((s, r) => s + parseNum(r.total_cash), 0)
-    const cardTotal       = filteredSheets.reduce((s, r) => s + parseNum(r.credit_card_yoco), 0)
-    const accountsTotal   = filteredSheets.reduce((s, r) => s + parseNum(r.charged_sales_accounts), 0)
-    const actualReceived  = cashTotal + cardTotal + accountsTotal                                    // incl. VAT
-    // Variance: positive = Z is higher than actual received (short), negative = over
-    const zVariance       = zRevenue - actualReceived
+    // ── 2. ACTUAL RECEIVED (cash − float + card + accounts) ──
+    // total_cash includes a R1000 till float each day; deduct it unless cash = 0
+    const cashTotal     = filteredSheets.reduce((s, r) => s + adjustedCash(parseNum(r.total_cash)), 0)
+    const cardTotal     = filteredSheets.reduce((s, r) => s + parseNum(r.credit_card_yoco), 0)
+    const accountsTotal = filteredSheets.reduce((s, r) => s + parseNum(r.charged_sales_accounts), 0)
+    const actualReceived = cashTotal + cardTotal + accountsTotal
+    const zVariance      = zRevenue - actualReceived
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // 3. EXPENSES (supplier purchases / operating costs)
-    // ══════════════════════════════════════════════════════════════════════════
+    // ── 3. EXPENSES ──
     const totalExpensesIncl = filteredExpenses.reduce((s, e) => s + Number(e.amount_incl_vat), 0)
     const totalExpensesExcl = filteredExpenses.reduce((s, e) => s + Number(e.amount_excl_vat), 0)
     const inputVat          = filteredExpenses.reduce((s, e) => s + Number(e.vat_amount), 0)
     const unpaidExpenses    = filteredExpenses.filter(e => !e.date_paid).reduce((s, e) => s + Number(e.amount_incl_vat), 0)
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // 4. COGS (Cost of Goods Sold) — CORRECTED FORMULA
-    //    COGS = Opening Stock Value + Stock Purchases (excl VAT) − Closing Stock Value
-    //    Stock Purchases = new_received × cost_per_item  (already excl VAT in enriched view)
-    // ══════════════════════════════════════════════════════════════════════════
+    // ── 4. COGS ──
     const totalOpStockValue = filteredCounts.reduce((s, c) => s + (c.op_stock_value ?? 0), 0)
     const totalClStockValue = filteredCounts.reduce((s, c) => s + (c.cl_stock_value ?? 0), 0)
     const stockPurchases    = filteredCounts.reduce((s, c) => {
       const rcv = (c.new_received ?? 0) * (c.cost_per_item ?? 0)
       return s + rcv
     }, 0)
-    // COGS = Opening + Purchases − Closing  (all excl VAT)
-    const cogs              = Math.max(0, totalOpStockValue + stockPurchases - totalClStockValue)
-    const stockRevenue      = filteredCounts.reduce((s, c) => s + (c.revenue ?? 0), 0)
+    const cogs         = Math.max(0, totalOpStockValue + stockPurchases - totalClStockValue)
+    const stockRevenue = filteredCounts.reduce((s, c) => s + (c.revenue ?? 0), 0)
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // 5. EMPLOYEE COSTS — CORRECTED: includes PAYE + UIF
-    //    Total employer labour cost = nett_pay + paye + uif_employee + uif_employer
-    //    (Gross cost to company, not just take-home)
-    // ══════════════════════════════════════════════════════════════════════════
-    // Build employee birth date map for PAYE calculations
+    // ── 5. EMPLOYEE COSTS ──
     const empBdMap = new Map<number, Date | null>()
     for (const e of employees) {
       empBdMap.set(e.employee_id, birthDateFromId(e.id_number))
     }
 
-    const nettPayTotal      = filteredPayslips.reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
-    const uifEmployeeTotal  = filteredPayslips.reduce((s, p) => s + Number(p.uif_employee ?? 0), 0)
-    const uifEmployerTotal  = filteredPayslips.reduce((s, p) => s + Number(p.uif_employer ?? 0), 0)
+    const nettPayTotal       = filteredPayslips.reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
+    const uifEmployeeTotal   = filteredPayslips.reduce((s, p) => s + Number(p.uif_employee ?? 0), 0)
+    const uifEmployerTotal   = filteredPayslips.reduce((s, p) => s + Number(p.uif_employer ?? 0), 0)
     const grossEarningsTotal = filteredPayslips.reduce((s, p) => s + Number(p.total_earnings ?? 0), 0)
-    // PAYE: compute from tax table for monthly payslips using employee birth date
-    const payeTotal = filteredPayslips.reduce((s, p) => s + Number(p.paye ?? 0), 0)
-    // Total employee cost for P&L = gross earnings (what employee earns before deductions)
-    // = nett_pay + paye + uif_employee  (employer also pays uif_employer on top)
-    const totalWageCosts    = nettPayTotal + payeTotal + uifEmployeeTotal  // gross cost on income statement
-    const totalLabourCost   = totalWageCosts + uifEmployerTotal            // full cost to company
+    const payeTotal          = filteredPayslips.reduce((s, p) => s + Number(p.paye ?? 0), 0)
+    const totalWageCosts     = nettPayTotal + payeTotal + uifEmployeeTotal
+    const totalLabourCost    = totalWageCosts + uifEmployerTotal
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // 6. PROFIT — CORRECTED STRUCTURE
-    //    Gross Profit       = Revenue (excl VAT) − COGS
-    //    Operating Expenses = Supplier expenses excl VAT (non-stock)
-    //    Net Profit BT      = Gross Profit − Operating Expenses − Labour Cost
-    // ══════════════════════════════════════════════════════════════════════════
-    const grossProfit       = revenueExclVat - cogs
-    const grossMargin       = revenueExclVat > 0 ? (grossProfit / revenueExclVat * 100) : 0
-
-    // Operating expenses = all supplier expenses excl VAT
-    // (In many small businesses, COGS is a subset of totalExpensesExcl —
-    //  if the retail stock purchases flow through vb_expense, subtract to avoid double-count.
-    //  Here we treat vb_expense as SEPARATE from stock counts — operating overheads only.)
-    const operatingExpenses = totalExpensesExcl   // supplier invoices (rent, utilities, packaging, etc.)
-
-    // ── Net Profit Before Tax ──
-    // = Gross Profit − Operating Expenses (overheads) − Labour Cost
-    const netProfitBeforeTax  = grossProfit - operatingExpenses - totalLabourCost
-    const netMargin           = revenueExclVat > 0 ? (netProfitBeforeTax / revenueExclVat * 100) : 0
-
-    // ── VAT position ──
-    const vatPayable = outputVat - inputVat  // positive = owe SARS, negative = claim back
-
-    // ── EBITDA proxy ──
-    const ebitda = grossProfit - operatingExpenses - totalLabourCost
+    // ── 6. PROFIT ──
+    const grossProfit      = revenueExclVat - cogs
+    const grossMargin      = revenueExclVat > 0 ? (grossProfit / revenueExclVat * 100) : 0
+    const operatingExpenses = totalExpensesExcl
+    const netProfitBeforeTax = grossProfit - operatingExpenses - totalLabourCost
+    const netMargin          = revenueExclVat > 0 ? (netProfitBeforeTax / revenueExclVat * 100) : 0
+    const vatPayable         = outputVat - inputVat
+    const ebitda             = grossProfit - operatingExpenses - totalLabourCost
 
     return {
-      // Revenue
       zRevenue, revenueExclVat, outputVat,
-      // Z vs Actual
       cashTotal, cardTotal, accountsTotal,
       actualReceived, zVariance,
-      // Expenses
       totalExpensesIncl, totalExpensesExcl, inputVat, unpaidExpenses,
-      // VAT
       vatPayable,
-      // Stock / COGS
       totalOpStockValue, totalClStockValue, stockPurchases, cogs, stockRevenue,
-      // Labour
       nettPayTotal, payeTotal, uifEmployeeTotal, uifEmployerTotal,
       grossEarningsTotal, totalWageCosts, totalLabourCost,
-      // Profit
       grossProfit, grossMargin,
       operatingExpenses,
       netProfitBeforeTax, netMargin,
       ebitda,
-      // Meta
       sheetCount: filteredSheets.length,
       avgDailyRevenue: filteredSheets.length > 0 ? zRevenue / filteredSheets.length : 0,
     }
@@ -532,7 +478,7 @@ export default function BusinessDashboard() {
     for (const s of cashUpSheets) {
       const key = dateKey(sheetDate(s))
       const cur = map.get(key) ?? { revenue: 0, expenses: 0, wages: 0, netProfit: 0 }
-      cur.revenue += parseNum(s.till_total_z_print) / 1.15   // excl VAT
+      cur.revenue += parseNum(s.till_total_z_print) / 1.15
       map.set(key, cur)
     }
     for (const e of expenses) {
@@ -542,10 +488,8 @@ export default function BusinessDashboard() {
       map.set(key, cur)
     }
     for (const p of payslips) {
-      // Use pay_date as the payslip date, falling back to period_to
       const key = (p.pay_date ?? p.period_to).slice(0,7)
       const cur = map.get(key) ?? { revenue: 0, expenses: 0, wages: 0, netProfit: 0 }
-      // Labour cost = nett + paye + uif
       cur.wages += Number(p.nett_pay ?? 0) + Number(p.paye ?? 0) + Number(p.uif_employee ?? 0) + Number(p.uif_employer ?? 0)
       map.set(key, cur)
     }
@@ -569,12 +513,20 @@ export default function BusinessDashboard() {
   // ── Daily revenue for current period ──
   const dailyRevenue = useMemo(() =>
     filteredSheets
-      .map(s => ({
-        date:     sheetDate(s).toISOString().split('T')[0],
-        zTotal:   parseNum(s.till_total_z_print),
-        actual:   parseNum(s.total_cash) + parseNum(s.credit_card_yoco) + parseNum(s.charged_sales_accounts),
-        variance: parseNum(s.till_total_z_print) - (parseNum(s.total_cash) + parseNum(s.credit_card_yoco) + parseNum(s.charged_sales_accounts)),
-      }))
+      .map(s => {
+        const rawCash = parseNum(s.total_cash)
+        const cash    = adjustedCash(rawCash)
+        const card    = parseNum(s.credit_card_yoco)
+        const accs    = parseNum(s.charged_sales_accounts)
+        const z       = parseNum(s.till_total_z_print)
+        const actual  = cash + card + accs
+        return {
+          date:     sheetDate(s).toISOString().split('T')[0],
+          zTotal:   z,
+          actual,
+          variance: z - actual,
+        }
+      })
       .sort((a, b) => a.date.localeCompare(b.date))
       .map(d => ({
         name:     d.date.slice(5),
@@ -588,11 +540,12 @@ export default function BusinessDashboard() {
   const zActualDetail = useMemo(() =>
     filteredSheets
       .map(s => {
-        const z      = parseNum(s.till_total_z_print)
-        const cash   = parseNum(s.total_cash)
-        const card   = parseNum(s.credit_card_yoco)
-        const accs   = parseNum(s.charged_sales_accounts)
-        const actual = cash + card + accs
+        const z          = parseNum(s.till_total_z_print)
+        const rawCash    = parseNum(s.total_cash)
+        const cash       = adjustedCash(rawCash)   // deduct R1000 float unless cash = 0
+        const card       = parseNum(s.credit_card_yoco)
+        const accs       = parseNum(s.charged_sales_accounts)
+        const actual     = cash + card + accs
         return {
           date:     sheetDate(s).toISOString().split('T')[0],
           z, cash, card, accounts: accs, actual,
@@ -628,7 +581,6 @@ export default function BusinessDashboard() {
       map.set(k, e)
     }
     return Array.from(map.entries()).map(([name, v]) => {
-      // COGS per category = opening + purchases − closing
       const cogs   = Math.max(0, v.opVal + v.purchases - v.clVal)
       const gp     = v.revenue - cogs
       const margin = v.revenue > 0 ? gp / v.revenue * 100 : 0
@@ -636,7 +588,7 @@ export default function BusinessDashboard() {
     }).sort((a, b) => b.revenue - a.revenue)
   }, [filteredCounts])
 
-  // ── Birthday notices (upcoming within 7 days) ──
+  // ── Birthday notices ──
   const upcomingBirthdays = useMemo(() => {
     const today = new Date()
     today.setHours(0, 0, 0, 0)
@@ -646,16 +598,15 @@ export default function BusinessDashboard() {
         const bd = birthDateFromId(e.id_number)
         if (!bd) return null
         const days = daysUntilBirthday(bd, today)
-        const age  = ageAtDate(bd, today) + (days === 0 ? 0 : 1) // turning age
+        const age  = ageAtDate(bd, today) + (days === 0 ? 0 : 1)
         return { employee_id: e.employee_id, full_name: e.full_name, job_position: e.job_position, days, age, bd }
       })
       .filter((x): x is NonNullable<typeof x> => x !== null && x.days <= 7)
       .sort((a, b) => a.days - b.days)
   }, [employees])
 
-  // ── Employee cost breakdown (PAYE calculated from tax table) ──
+  // ── Employee cost breakdown ──
   const employeeBreakdown = useMemo(() => {
-    // Build a lookup: employee_id → { birthDate, name, jobPosition }
     const empMap = new Map<number, { birthDate: Date | null; name: string; jobPosition: string | null }>()
     for (const e of employees) {
       empMap.set(e.employee_id, {
@@ -673,12 +624,9 @@ export default function BusinessDashboard() {
       const earnings  = Number(p.total_earnings ?? 0)
       const isMonthly = p.payslip_type === 'monthly'
 
-      // Calculate PAYE from tax table (only for monthly payslips)
       const computedPaye = isMonthly
         ? calcPayslipPaye(earnings, p.payslip_type, birthDate, p.pay_date ?? p.period_to)
         : 0
-
-      // Use stored paye if it exists and is > 0, otherwise use computed
       const payeAmount = (Number(p.paye ?? 0) > 0) ? Number(p.paye) : computedPaye
 
       const cur = map.get(p.employee_id) ?? {
@@ -723,7 +671,7 @@ export default function BusinessDashboard() {
 
   // ── Payment method split ──
   const paymentSplit = useMemo(() => [
-    { name: 'Cash', value: Math.round(core.cashTotal), color: BRAND.coffee },
+    { name: 'Cash (net of float)', value: Math.round(core.cashTotal), color: BRAND.coffee },
     { name: 'Card / YOCO', value: Math.round(core.cardTotal), color: BRAND.caramel },
     { name: 'Accounts', value: Math.round(core.accountsTotal), color: BRAND.wheat },
   ].filter(p => p.value > 0), [core])
@@ -781,11 +729,9 @@ export default function BusinessDashboard() {
     },
   ], [core])
 
-  // ── Best / worst categories ──
   const bestCategories  = categoryAnalysis.filter(c => c.margin > 40).slice(0, 3)
   const worstCategories = categoryAnalysis.filter(c => c.revenue > 0 && c.margin < 20).slice(0, 3)
 
-  // ── Year + FY options ──
   const allYears = useMemo(() => {
     const years = new Set<number>()
     cashUpSheets.forEach(s => years.add(sheetDate(s).getFullYear()))
@@ -912,13 +858,12 @@ export default function BusinessDashboard() {
               </div>
             </>
           )}
-          {/* ── Wage date mode toggle ── */}
           <div className="space-y-1">
             <Label className="text-[10px] uppercase tracking-widest text-muted-foreground">Wages date basis</Label>
             <div className="flex gap-1">
               {([
-                { val: 'pay_date',  label: 'Pay Date',   title: 'Use pay_date (the payslip date) to bucket wages' },
-                { val: 'period_to', label: 'Period End',  title: 'Use period_to (end of work period) to bucket wages' },
+                { val: 'pay_date',  label: 'Pay Date',  title: 'Use pay_date (the payslip date) to bucket wages' },
+                { val: 'period_to', label: 'Period End', title: 'Use period_to (end of work period) to bucket wages' },
               ] as const).map(opt => (
                 <button key={opt.val} onClick={() => setPayslipDateMode(opt.val)}
                   title={opt.title}
@@ -949,15 +894,14 @@ export default function BusinessDashboard() {
           trend={core.revenueExclVat > 0 && core.totalLabourCost/core.revenueExclVat < 0.30 ? 'good-down' : 'bad-up'}
           accent={BRAND.wheat} icon={Users} />
         <KpiCard label="Closing Stock Value" value={ZAR(core.totalClStockValue)} sub={`Opening was ${ZAR(core.totalOpStockValue)}`} accent={BRAND.coffee} icon={Package} />
-        {/* Z vs Actual variance */}
         <div className="rounded-2xl border bg-card p-4 relative overflow-hidden flex flex-col gap-1.5">
           <div className="absolute top-0 left-0 right-0 h-0.5" style={{ background: Math.abs(core.zVariance) < 10 ? BRAND.sage : BRAND.terracotta }} />
           <div className="flex items-start justify-between">
             <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium mt-0.5">Z vs Actual Variance</p>
             <div className="w-7 h-7 rounded-lg flex items-center justify-center bg-muted shrink-0"><Scale className="w-3.5 h-3.5 text-muted-foreground" /></div>
           </div>
-          <p className={`font-bold tabular-nums text-xl leading-tight ${Math.abs(core.zVariance) < 1 ? 'text-emerald-600' : Math.abs(core.zVariance) < 100 ? 'text-amber-600' : 'text-red-500'}`}>
-            {ZAR(Math.abs(core.zVariance))}
+          <p className={`font-bold tabular-nums text-xl ${core.zVariance === 0 ? 'text-emerald-600' : core.zVariance < 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+            {core.zVariance === 0 ? ZAR(0) : core.zVariance < 0 ? `+${ZAR(Math.abs(core.zVariance))}` : `-${ZAR(Math.abs(core.zVariance))}`}
           </p>
           <VarianceBadge variance={core.zVariance} />
         </div>
@@ -979,7 +923,6 @@ export default function BusinessDashboard() {
         {/* ══════════════════════════════════════════════════════════════════ */}
         <TabsContent value="overview" className="mt-5 space-y-5">
 
-          {/* ── P&L Summary ── */}
           <div className="rounded-2xl border bg-card overflow-hidden">
             <div className="px-5 py-4 border-b bg-muted/30">
               <p className="text-sm font-semibold">Profit & Loss Statement</p>
@@ -987,14 +930,14 @@ export default function BusinessDashboard() {
             </div>
             <div className="divide-y">
               {[
-                { label: 'Z-Print Revenue (incl. VAT)',      value: core.zRevenue,             indent: 0, bold: false, note: 'From till Z-print totals' },
-                { label: 'Less: Output VAT (÷ 1.15)',        value: -core.outputVat,           indent: 1, bold: false, note: '15% VAT on sales' },
-                { label: 'REVENUE (excl. VAT)',              value: core.revenueExclVat,       indent: 0, bold: true,  note: 'Trading revenue',            color: BRAND.caramel },
-                { label: 'Less: Cost of Goods Sold (COGS)', value: -core.cogs,                indent: 1, bold: false, note: 'Opening stock + purchases − closing stock (excl. VAT)' },
-                { label: 'GROSS PROFIT',                     value: core.grossProfit,          indent: 0, bold: true,  note: `Margin: ${pct(core.grossMargin)}`, color: core.grossProfit > 0 ? BRAND.sage : BRAND.terracotta },
-                { label: 'Less: Operating Expenses',         value: -core.totalExpensesExcl,   indent: 1, bold: false, note: 'Supplier invoices excl. VAT' },
-                { label: 'Less: Labour Cost (Wages & PAYE + UIF)', value: -core.totalLabourCost, indent: 1, bold: false, note: `Nett pay ${ZAR(core.nettPayTotal)} + PAYE ${ZAR(core.payeTotal)} + UIF ${ZAR(core.uifEmployeeTotal + core.uifEmployerTotal)}` },
-                { label: 'NET PROFIT BEFORE TAX',            value: core.netProfitBeforeTax,   indent: 0, bold: true,  note: `Margin: ${pct(core.netMargin)}`, color: core.netProfitBeforeTax > 0 ? BRAND.sage : BRAND.terracotta },
+                { label: 'Z-Print Revenue (incl. VAT)',            value: core.zRevenue,             indent: 0, bold: false, note: 'From till Z-print totals' },
+                { label: 'Less: Output VAT (÷ 1.15)',              value: -core.outputVat,           indent: 1, bold: false, note: '15% VAT on sales' },
+                { label: 'REVENUE (excl. VAT)',                    value: core.revenueExclVat,       indent: 0, bold: true,  note: 'Trading revenue',            color: BRAND.caramel },
+                { label: 'Less: Cost of Goods Sold (COGS)',        value: -core.cogs,                indent: 1, bold: false, note: 'Opening stock + purchases − closing stock (excl. VAT)' },
+                { label: 'GROSS PROFIT',                           value: core.grossProfit,          indent: 0, bold: true,  note: `Margin: ${pct(core.grossMargin)}`, color: core.grossProfit > 0 ? BRAND.sage : BRAND.terracotta },
+                { label: 'Less: Operating Expenses',               value: -core.totalExpensesExcl,   indent: 1, bold: false, note: 'Supplier invoices excl. VAT' },
+                { label: 'Less: Labour Cost (Wages & PAYE + UIF)', value: -core.totalLabourCost,     indent: 1, bold: false, note: `Nett pay ${ZAR(core.nettPayTotal)} + PAYE ${ZAR(core.payeTotal)} + UIF ${ZAR(core.uifEmployeeTotal + core.uifEmployerTotal)}` },
+                { label: 'NET PROFIT BEFORE TAX',                  value: core.netProfitBeforeTax,   indent: 0, bold: true,  note: `Margin: ${pct(core.netMargin)}`, color: core.netProfitBeforeTax > 0 ? BRAND.sage : BRAND.terracotta },
               ].map((row, i) => (
                 <div key={i} className={`flex items-start justify-between px-5 py-2.5 gap-4 ${row.bold ? 'bg-muted/20' : ''}`}>
                   <div>
@@ -1010,7 +953,6 @@ export default function BusinessDashboard() {
             </div>
           </div>
 
-          {/* ── 12-month trend ── */}
           <div className="rounded-2xl border bg-card p-5">
             <SectionHeader title="12-Month Financial Trend" sub="Revenue (excl. VAT) vs expenses vs net profit" accent={BRAND.caramel} />
             <ResponsiveContainer width="100%" height={260}>
@@ -1028,10 +970,9 @@ export default function BusinessDashboard() {
             </ResponsiveContainer>
           </div>
 
-          {/* ── Payment split + Cost structure ── */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="rounded-2xl border bg-card p-5">
-              <SectionHeader title="Payment Method Split" sub="How customers are paying (incl. VAT)" accent={BRAND.coffee} />
+              <SectionHeader title="Payment Method Split" sub="How customers are paying (cash net of R1,000 float)" accent={BRAND.coffee} />
               <ResponsiveContainer width="100%" height={180}>
                 <PieChart>
                   <Pie data={paymentSplit} cx="50%" cy="50%" innerRadius={50} outerRadius={80} paddingAngle={3} dataKey="value" strokeWidth={0}>
@@ -1046,7 +987,7 @@ export default function BusinessDashboard() {
                     <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-sm" style={{ background: PALETTE[i] }} /><span className="text-muted-foreground">{p.name}</span></div>
                     <div className="flex items-center gap-2">
                       <span>{ZAR(p.value)}</span>
-                      <span className="text-muted-foreground">{core.zRevenue > 0 ? pct(p.value/core.zRevenue*100) : '—'}</span>
+                      <span className="text-muted-foreground">{core.actualReceived > 0 ? pct(p.value/core.actualReceived*100) : '—'}</span>
                     </div>
                   </div>
                 ))}
@@ -1055,7 +996,7 @@ export default function BusinessDashboard() {
                   <span>{ZAR(core.zRevenue)}</span>
                 </div>
                 <div className="flex justify-between text-xs">
-                  <span className="text-muted-foreground">Actual Received</span>
+                  <span className="text-muted-foreground">Actual Received (net of floats)</span>
                   <span>{ZAR(core.actualReceived)}</span>
                 </div>
                 <div className="flex justify-between text-xs font-semibold" style={{ color: Math.abs(core.zVariance) < 1 ? BRAND.sage : BRAND.terracotta }}>
@@ -1104,7 +1045,7 @@ export default function BusinessDashboard() {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <KpiCard label="Z-Print Total (incl. VAT)" value={ZAR(core.zRevenue)} sub={`${core.sheetCount} days`} accent={BRAND.caramel} />
             <KpiCard label="Revenue Excl. VAT" value={ZAR(core.revenueExclVat)} sub="Trading revenue" accent={BRAND.coffee} />
-            <KpiCard label="Actual Received" value={ZAR(core.actualReceived)} sub="Cash + Card + Accounts" accent={BRAND.wheat} />
+            <KpiCard label="Actual Received" value={ZAR(core.actualReceived)} sub="Cash (net float) + Card + Accounts" accent={BRAND.wheat} />
             <div className="rounded-2xl border bg-card p-4 relative overflow-hidden flex flex-col gap-1.5">
               <div className="absolute top-0 left-0 right-0 h-0.5" style={{ background: Math.abs(core.zVariance) < 10 ? BRAND.sage : BRAND.terracotta }} />
               <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium">Period Z Variance</p>
@@ -1115,9 +1056,8 @@ export default function BusinessDashboard() {
             </div>
           </div>
 
-          {/* Daily Z vs Actual chart */}
           <div className="rounded-2xl border bg-card p-5">
-            <SectionHeader title="Daily Z-Print vs Actual Received" sub="Spot daily variances — Z incl. VAT" accent={BRAND.caramel} />
+            <SectionHeader title="Daily Z-Print vs Actual Received" sub="Z incl. VAT · Cash shown net of R1,000 float" accent={BRAND.caramel} />
             <ResponsiveContainer width="100%" height={240}>
               <BarChart data={dailyRevenue} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
@@ -1125,25 +1065,24 @@ export default function BusinessDashboard() {
                 <YAxis tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }} axisLine={false} tickLine={false} tickFormatter={ZARk} />
                 <Tooltip content={<ChartTooltip />} />
                 <Legend iconType="square" iconSize={8} wrapperStyle={{ fontSize: 11 }} />
-                <Bar dataKey="zTotal"  name="Z-Print"         fill={BRAND.caramel}    radius={[3,3,0,0]} maxBarSize={24} />
-                <Bar dataKey="actual"  name="Actual Received" fill={BRAND.coffee}     radius={[3,3,0,0]} maxBarSize={24} />
+                <Bar dataKey="zTotal"  name="Z-Print"                    fill={BRAND.caramel}  radius={[3,3,0,0]} maxBarSize={24} />
+                <Bar dataKey="actual"  name="Actual Received (net float)" fill={BRAND.coffee}   radius={[3,3,0,0]} maxBarSize={24} />
                 <Line type="monotone" dataKey="variance" name="Variance" stroke={BRAND.terracotta} strokeWidth={2} dot={{ r: 3 }} />
               </BarChart>
             </ResponsiveContainer>
           </div>
 
-          {/* Per-day Z vs Actual detail table */}
           <div className="rounded-2xl border bg-card overflow-hidden">
             <div className="px-5 py-3 border-b bg-muted/30">
               <p className="text-sm font-semibold">Daily Z vs Actual Breakdown</p>
-              <p className="text-xs text-muted-foreground">Z-print compared to cash + card + accounts received</p>
+              <p className="text-xs text-muted-foreground">Cash shown net of R1,000 till float · Z-print compared to cash + card + accounts</p>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead><tr className="border-b bg-muted/20">
                   <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Date</th>
                   <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Z-Print</th>
-                  <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Cash</th>
+                  <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Cash (net float)</th>
                   <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Card / YOCO</th>
                   <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Accounts</th>
                   <th className="text-right px-4 py-2.5 font-medium text-muted-foreground">Actual Total</th>
@@ -1160,8 +1099,8 @@ export default function BusinessDashboard() {
                       <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{ZAR(d.accounts)}</td>
                       <td className="px-4 py-2.5 text-right tabular-nums font-semibold">{ZAR(d.actual)}</td>
                       <td className="px-4 py-2.5 text-right tabular-nums font-semibold"
-                        style={{ color: Math.abs(d.variance) < 1 ? BRAND.sage : Math.abs(d.variance) < 50 ? '#B45309' : BRAND.terracotta }}>
-                        {ZAR(d.variance)}
+                        style={{ color: d.variance === 0 ? BRAND.sage : d.variance < 0 ? '#16a34a' : BRAND.terracotta }}>
+                        {d.variance === 0 ? ZAR(0) : d.variance < 0 ? `+${ZAR(Math.abs(d.variance))}` : `-${ZAR(Math.abs(d.variance))}`}
                       </td>
                       <td className="px-4 py-2.5"><VarianceBadge variance={d.variance} /></td>
                     </tr>
@@ -1177,7 +1116,10 @@ export default function BusinessDashboard() {
                       <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(core.cardTotal)}</td>
                       <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(core.accountsTotal)}</td>
                       <td className="px-4 py-2.5 text-right tabular-nums">{ZAR(core.actualReceived)}</td>
-                      <td className="px-4 py-2.5 text-right tabular-nums" style={{ color: Math.abs(core.zVariance) < 1 ? BRAND.sage : BRAND.terracotta }}>{ZAR(core.zVariance)}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums"
+                        style={{ color: core.zVariance === 0 ? BRAND.sage : core.zVariance < 0 ? '#16a34a' : BRAND.terracotta }}>
+                        {core.zVariance === 0 ? ZAR(0) : core.zVariance < 0 ? `+${ZAR(Math.abs(core.zVariance))}` : `-${ZAR(Math.abs(core.zVariance))}`}
+                      </td>
                       <td className="px-4 py-2.5"><VarianceBadge variance={core.zVariance} /></td>
                     </tr>
                   </tfoot>
@@ -1308,7 +1250,6 @@ export default function BusinessDashboard() {
             <KpiCard label="COGS" value={ZAR(core.cogs)} sub="Opening + Purchases − Closing" trendLabel={core.revenueExclVat > 0 ? `${pct(core.cogs/core.revenueExclVat*100)} of revenue` : undefined} accent={BRAND.terracotta} />
           </div>
 
-          {/* COGS formula explainer */}
           <div className="rounded-2xl border bg-card overflow-hidden">
             <div className="px-5 py-3 border-b bg-muted/30">
               <p className="text-sm font-semibold">COGS Calculation</p>
@@ -1335,7 +1276,6 @@ export default function BusinessDashboard() {
             </div>
           </div>
 
-          {/* Category table */}
           <div className="rounded-2xl border bg-card overflow-hidden">
             <div className="px-5 py-3 border-b bg-muted/30">
               <p className="text-sm font-semibold">Category Gross Profit Analysis</p>
@@ -1378,7 +1318,6 @@ export default function BusinessDashboard() {
         {/* ══════════════════════════════════════════════════════════════════ */}
         <TabsContent value="staff" className="mt-5 space-y-5">
 
-          {/* ── Summary KPIs ── */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <KpiCard label="Gross Earnings" value={ZAR(core.grossEarningsTotal)} sub="Total before deductions" accent={BRAND.caramel} />
             <KpiCard label="Nett Pay (Take-home)" value={ZAR(core.nettPayTotal)} sub={`${filteredPayslips.length} payslips`} accent={BRAND.wheat} />
@@ -1386,7 +1325,6 @@ export default function BusinessDashboard() {
             <KpiCard label="UIF" value={ZAR(core.uifEmployeeTotal + core.uifEmployerTotal)} sub={`Emp: ${ZAR(core.uifEmployeeTotal)} · Emr: ${ZAR(core.uifEmployerTotal)}`} accent={BRAND.coffee} />
           </div>
 
-          {/* ── Total cost to company ── */}
           <div className="rounded-2xl border bg-card overflow-hidden">
             <div className="px-5 py-4 border-b bg-muted/30">
               <p className="text-sm font-semibold">Labour Cost Summary</p>
@@ -1415,7 +1353,6 @@ export default function BusinessDashboard() {
             </div>
           </div>
 
-          {/* ── PAYE & UIF monthly summary ── */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="rounded-2xl border bg-card p-4 space-y-3">
               <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">PAYE Summary</p>
@@ -1449,7 +1386,6 @@ export default function BusinessDashboard() {
             </div>
           </div>
 
-          {/* ── Per-employee breakdown ── */}
           {employeeBreakdown.length > 0 ? (
             <div className="rounded-2xl border bg-card overflow-hidden">
               <div className="px-5 py-3 border-b bg-muted/30">
@@ -1530,9 +1466,9 @@ export default function BusinessDashboard() {
                     <YAxis type="category" dataKey="name" width={130} axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }} />
                     <Tooltip content={<ChartTooltip />} />
                     <Legend iconType="square" iconSize={8} wrapperStyle={{ fontSize: 11 }} />
-                    <Bar dataKey="nett"   name="Nett Pay" stackId="a" fill={BRAND.wheat}      radius={[0,0,0,0]} maxBarSize={24} />
-                    <Bar dataKey="paye"   name="PAYE"     stackId="a" fill={BRAND.terracotta} radius={[0,0,0,0]} maxBarSize={24} />
-                    <Bar dataKey="uifEmp" name="UIF (Emp)" stackId="a" fill={BRAND.sage}      radius={[0,3,3,0]} maxBarSize={24} />
+                    <Bar dataKey="nett"   name="Nett Pay"  stackId="a" fill={BRAND.wheat}      radius={[0,0,0,0]} maxBarSize={24} />
+                    <Bar dataKey="paye"   name="PAYE"      stackId="a" fill={BRAND.terracotta} radius={[0,0,0,0]} maxBarSize={24} />
+                    <Bar dataKey="uifEmp" name="UIF (Emp)" stackId="a" fill={BRAND.sage}       radius={[0,3,3,0]} maxBarSize={24} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -1575,7 +1511,6 @@ export default function BusinessDashboard() {
             </div>
           </div>
 
-          {/* What's working / not working */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="rounded-2xl border bg-card overflow-hidden">
               <div className="px-4 py-3 border-b bg-emerald-50 flex items-center gap-2">
@@ -1592,7 +1527,7 @@ export default function BusinessDashboard() {
                   ...(core.grossMargin > 30 ? [{ title: 'Gross margin is healthy', detail: `${pct(core.grossMargin)} — above the 30% benchmark`, tag: 'Margin' }] : []),
                   ...(core.netProfitBeforeTax > 0 ? [{ title: 'Business is profitable', detail: `Net profit before tax of ${ZAR(core.netProfitBeforeTax)} this period`, tag: 'Profit' }] : []),
                   ...(Math.abs(core.zVariance) < 10 ? [{ title: 'Z-print closely matches actual', detail: `Variance of only ${ZAR(Math.abs(core.zVariance))} — excellent cash-up accuracy`, tag: 'Z Balance' }] : []),
-                  ...(core.cardTotal > core.cashTotal ? [{ title: 'Strong card payment adoption', detail: `${pct(core.cardTotal/core.zRevenue*100)} of sales via card/YOCO`, tag: 'Payments' }] : []),
+                  ...(core.cardTotal > core.cashTotal ? [{ title: 'Strong card payment adoption', detail: `${pct(core.cardTotal/core.actualReceived*100)} of actual receipts via card/YOCO`, tag: 'Payments' }] : []),
                 ].slice(0, 5).map((item, i) => (
                   <div key={i} className="px-4 py-3">
                     <div className="flex items-start justify-between gap-2">
@@ -1642,7 +1577,6 @@ export default function BusinessDashboard() {
             </div>
           </div>
 
-          {/* Full financial summary */}
           <div className="rounded-2xl border bg-card overflow-hidden">
             <div className="px-5 py-3 border-b bg-muted/30">
               <p className="text-sm font-semibold">Full Financial Summary</p>
