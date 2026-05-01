@@ -720,26 +720,45 @@ function colLetter(idx: number): string {
   return s
 }
 
-function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode }: {
+type UnmatchedRow = {
+  description: string; opening_stock: number; new_received: number
+  closing_stock: number; items_sold: number | null; revenue: number | null
+  category_id: number | null; include: boolean; rawRowIdx: number
+}
+
+function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categories }: {
   open: boolean; onClose: () => void; items: (RetailItem | FoodItem)[]
-  onSave: (rows: any[], date: string) => Promise<void>; countDate: string; mode: 'retail' | 'food'
+  onSave: (rows: any[], date: string) => Promise<void>; countDate: string
+  mode: 'retail' | 'food'; categories: StockCategory[]
 }) {
-  const [file, setFile]               = useState<File | null>(null)
-  const [rows, setRows]               = useState<any[]>([])
-  const [rawData, setRawData]         = useState<any[][]>([])
+  const [file, setFile]                 = useState<File | null>(null)
+  const [rows, setRows]                 = useState<any[]>([])
+  const [rawData, setRawData]           = useState<any[][]>([])
   const [headerRowIdx, setHeaderRowIdx] = useState(-1)
-  const [error, setError]             = useState('')
-  const [saving, setSaving]           = useState(false)
-  const [unmatched, setUnmatched]     = useState<string[]>([])
-  const [selectedDate, setSelectedDate] = useState(countDate)
-  const [showRaw, setShowRaw]         = useState(false)
-  const fileRef = useRef<HTMLInputElement>(null)
+  const [error, setError]               = useState('')
+  const [saving, setSaving]             = useState(false)
+  const [unmatchedRows, setUnmatchedRows] = useState<UnmatchedRow[]>([])
+  const [showUnmatched, setShowUnmatched] = useState(false)
+  const [catList, setCatList]           = useState<StockCategory[]>([])
+  const [newCatName, setNewCatName]     = useState('')
+  const [addingCat, setAddingCat]       = useState(false)
+  const [savingCat, setSavingCat]       = useState(false)
+  const [selectedDate, setSelectedDate]     = useState(countDate)
+  const [showRaw, setShowRaw]               = useState(false)
+  const [highlightedRawRow, setHighlightedRawRow] = useState<number | null>(null)
+  const fileRef    = useRef<HTMLInputElement>(null)
+  const rawPanelRef = useRef<HTMLDivElement>(null)
   const monthOptions = useMemo(() => getLastNMonths(24), [])
 
   useEffect(() => {
-    if (!open) { setFile(null); setRows([]); setRawData([]); setHeaderRowIdx(-1); setError(''); setUnmatched([]); setShowRaw(false) }
-    else setSelectedDate(countDate)
-  }, [open, countDate])
+    if (!open) {
+      setFile(null); setRows([]); setRawData([]); setHeaderRowIdx(-1); setError('')
+      setUnmatchedRows([]); setShowUnmatched(false); setShowRaw(false)
+      setHighlightedRawRow(null); setAddingCat(false); setNewCatName('')
+    } else {
+      setSelectedDate(countDate); setCatList(categories)
+    }
+  }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleDateChange(newDate: string) {
     setSelectedDate(newDate)
@@ -752,19 +771,32 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode }: {
     return m
   }, [items])
 
+  const priceMap = useMemo(() => {
+    const m = new Map<number, { sell_price: number | null; cost_price: number | null; unit_cost: number | null }>()
+    for (const item of items) m.set(item.item_id, {
+      sell_price: (item as any).sell_price ?? null,
+      cost_price: (item as any).cost_price ?? null,
+      unit_cost:  (item as any).cost_per_item ?? (item as any).cost_per_unit ?? null,
+    })
+    return m
+  }, [items])
+
   const categoryStats = useMemo(() => {
-    const map = new Map<string, { opening: number; closing: number; received: number; revenue: number }>()
+    const map = new Map<string, { opening: number; closing: number; received: number; revenue: number; opValue: number; clValue: number }>()
     for (const row of rows) {
-      const cat = idToCategory.get(row.item_id) ?? 'Uncategorised'
-      const e = map.get(cat) ?? { opening: 0, closing: 0, received: 0, revenue: 0 }
+      const cat   = idToCategory.get(row.item_id) ?? 'Uncategorised'
+      const price = priceMap.get(row.item_id)?.sell_price ?? 0
+      const e = map.get(cat) ?? { opening: 0, closing: 0, received: 0, revenue: 0, opValue: 0, clValue: 0 }
       e.opening  += row.opening_stock ?? 0
       e.closing  += row.closing_stock ?? 0
       e.received += row.new_received  ?? 0
       e.revenue  += row.revenue       ?? 0
+      e.opValue  += (row.opening_stock ?? 0) * price
+      e.clValue  += (row.closing_stock  ?? 0) * price
       map.set(cat, e)
     }
     return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]))
-  }, [rows, idToCategory])
+  }, [rows, idToCategory, priceMap])
 
   const totals = useMemo(() => ({
     opening:  rows.reduce((s, r) => s + (r.opening_stock ?? 0), 0),
@@ -773,8 +805,30 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode }: {
     revenue:  rows.reduce((s, r) => s + (r.revenue        ?? 0), 0),
   }), [rows])
 
+  const valueStats = useMemo(() => {
+    let opValue = 0, clValue = 0, revenue = 0
+    for (const row of rows) {
+      const price = priceMap.get(row.item_id)?.sell_price ?? 0
+      opValue += (row.opening_stock ?? 0) * price
+      clValue += (row.closing_stock  ?? 0) * price
+      revenue += row.revenue ?? 0
+    }
+    return { opValue, clValue, revenue }
+  }, [rows, priceMap])
+
+  useEffect(() => {
+    if (highlightedRawRow === null) return
+    setShowRaw(true)
+  }, [highlightedRawRow])
+
+  useEffect(() => {
+    if (highlightedRawRow === null || !showRaw || !rawPanelRef.current) return
+    const el = rawPanelRef.current.querySelector(`[data-raw-row="${highlightedRawRow}"]`)
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [highlightedRawRow, showRaw])
+
   function handleFile(f: File) {
-    setFile(f); setError(''); setRows([]); setRawData([]); setHeaderRowIdx(-1); setUnmatched([])
+    setFile(f); setError(''); setRows([]); setRawData([]); setHeaderRowIdx(-1); setUnmatchedRows([])
     const reader = new FileReader()
     reader.onload = (e) => {
       try {
@@ -803,21 +857,45 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode }: {
         const descMap = new Map<string, number>()
         for (const item of items) descMap.set(item.description.trim().toUpperCase(), item.item_id)
 
+        const catNames = new Set(catList.map(c => c.name.trim().toUpperCase()))
+
         const parsed: any[] = []
-        const unmatched_: string[] = []
+        const unmatched_: UnmatchedRow[] = []
         for (let i = headerIdx + 1; i < data.length; i++) {
           const row  = data[i]
           const desc = String(row[itemCol] ?? '').trim()
           if (!desc || desc.toLowerCase() === 'total') continue
+          // skip rows that match a known category name
+          if (catNames.has(desc.toUpperCase())) continue
+          // skip rows that look like section headers: all-caps text AND every numeric column is zero
+          const numericVals = [row[openCol], row[closeCol],
+            recvCol >= 0 ? row[recvCol] : null,
+            soldCol >= 0 ? row[soldCol] : null,
+            revCol  >= 0 ? row[revCol]  : null,
+          ].filter(v => v != null).map(v => parseFloat(v) || 0)
+          const isAllZero = numericVals.every(v => v === 0)
+          const isAllCaps = desc === desc.toUpperCase() && /^[A-Z\s&\/\-]+$/.test(desc)
+          if (isAllCaps && isAllZero) continue
           const itemId = descMap.get(desc.toUpperCase())
-          if (!itemId) { if (desc.length > 2) unmatched_.push(desc); continue }
+          if (!itemId) {
+            if (desc.length > 2) unmatched_.push({
+              description: desc,
+              opening_stock: parseFloat(row[openCol]) || 0,
+              new_received:  recvCol >= 0 ? (parseFloat(row[recvCol]) || 0) : 0,
+              closing_stock: parseFloat(row[closeCol]) || 0,
+              items_sold: soldCol >= 0 && row[soldCol] != null ? (parseFloat(row[soldCol]) || null) : null,
+              revenue:    revCol  >= 0 && row[revCol]  != null ? (parseFloat(row[revCol])  || null) : null,
+              category_id: null, include: false, rawRowIdx: i,
+            })
+            continue
+          }
           const os = parseFloat(row[openCol])  || 0
           const nr = recvCol >= 0 ? (parseFloat(row[recvCol]) || 0) : 0
           const cs = parseFloat(row[closeCol]) || 0
           const base: any = {
             item_id: itemId, count_date: selectedDate,
             opening_stock: os, new_received: nr, closing_stock: cs, notes: null,
-            _description: desc,
+            _description: desc, _rawRowIdx: i,
           }
           if (mode === 'retail') {
             base.items_sold = soldCol >= 0 && row[soldCol] != null ? (parseFloat(row[soldCol]) || null) : null
@@ -825,7 +903,8 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode }: {
           }
           parsed.push(base)
         }
-        setRows(parsed); setUnmatched(unmatched_.slice(0, 20))
+        setRows(parsed); setUnmatchedRows(unmatched_)
+        if (unmatched_.length > 0) setShowUnmatched(true)
       } catch (err: any) { setError('Failed to parse file: ' + err.message) }
     }
     reader.readAsArrayBuffer(f)
@@ -839,19 +918,48 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode }: {
     setRows(r => r.filter((_, i) => i !== idx))
   }
 
+  async function handleAddCategory() {
+    if (!newCatName.trim()) return
+    setSavingCat(true)
+    const supabase = createClient()
+    const table = mode === 'retail' ? 'vb_retail_stock_category' : 'vb_food_stock_category'
+    const { data } = await supabase
+      .from(table)
+      .insert([{ name: newCatName.trim(), sort_order: catList.length + 1 }])
+      .select().single()
+    if (data) setCatList(prev => [...prev, data as StockCategory])
+    setNewCatName(''); setAddingCat(false); setSavingCat(false)
+  }
+
   async function handleSave() {
-    if (!rows.length) return
+    const toCreate = unmatchedRows.filter(u => u.include && u.category_id)
+    if (!rows.length && !toCreate.length) return
     setSaving(true)
-    const clean = rows.map(({ _description, ...rest }) => rest)
+    const supabase = createClient()
+    const clean = rows.map(({ _description, _rawRowIdx, ...rest }) => rest)
+    for (const ur of toCreate) {
+      const table = mode === 'retail' ? 'vb_retail_stock_item' : 'vb_food_stock_item'
+      const { data } = await supabase
+        .from(table)
+        .insert([{ description: ur.description, category_id: ur.category_id, is_active: true }])
+        .select('item_id').single()
+      if (data?.item_id) clean.push({
+        item_id: data.item_id, count_date: selectedDate,
+        opening_stock: ur.opening_stock, new_received: ur.new_received,
+        closing_stock: ur.closing_stock, notes: null,
+        ...(mode === 'retail' ? { items_sold: ur.items_sold, revenue: ur.revenue } : {}),
+      })
+    }
     await onSave(clean, selectedDate)
     setSaving(false); onClose()
   }
 
-  const maxCols = useMemo(() => rawData.reduce((m, r) => Math.max(m, r.length), 0), [rawData])
+  const maxCols    = useMemo(() => rawData.reduce((m, r) => Math.max(m, r.length), 0), [rawData])
+  const includedNew = unmatchedRows.filter(u => u.include && u.category_id).length
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="w-[97vw] max-w-none max-h-[94vh] p-0 rounded-xl overflow-hidden flex flex-col">
+      <DialogContent className="w-screen !max-w-none h-screen !max-h-none p-0 !rounded-none overflow-hidden flex flex-col top-0 left-0 !translate-x-0 !translate-y-0">
 
         {/* ── Header ── */}
         <div className="px-5 pt-4 pb-3 border-b shrink-0 flex items-center gap-3 pr-14">
@@ -859,12 +967,8 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode }: {
             <FileSpreadsheet className="w-4 h-4" />Upload Monthly Stock Count
           </DialogTitle>
           {file && (
-            <Button
-              variant={showRaw ? 'secondary' : 'outline'}
-              size="sm"
-              className="gap-1.5 text-xs ml-auto"
-              onClick={() => setShowRaw(v => !v)}
-            >
+            <Button variant={showRaw ? 'secondary' : 'outline'} size="sm"
+              className="gap-1.5 text-xs ml-auto" onClick={() => setShowRaw(v => !v)}>
               <FileSpreadsheet className="w-3.5 h-3.5" />
               {showRaw ? 'Hide original' : 'Show original Excel'}
               <ChevronRight className={`w-3.5 h-3.5 transition-transform ${showRaw ? 'rotate-180' : ''}`} />
@@ -872,7 +976,7 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode }: {
           )}
         </div>
 
-        {/* ── Body: left + right panels ── */}
+        {/* ── Body ── */}
         <div className="flex flex-1 overflow-hidden">
 
           {/* Left panel */}
@@ -884,40 +988,31 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode }: {
                 <Calendar className="w-3.5 h-3.5" />Which month is this count for?
               </Label>
               <Select value={selectedDate} onValueChange={handleDateChange}>
-                <SelectTrigger className="bg-background">
-                  <SelectValue placeholder="Select month…" />
-                </SelectTrigger>
+                <SelectTrigger className="bg-background"><SelectValue placeholder="Select month…" /></SelectTrigger>
                 <SelectContent>
-                  {monthOptions.map(o => (
-                    <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                  ))}
+                  {monthOptions.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
                 </SelectContent>
               </Select>
               <p className="text-[11px] text-muted-foreground">Double-check this before importing — the count will be saved against this month.</p>
             </div>
 
-            {/* Template + drop zone */}
+            {/* Template hint */}
             <div className="rounded-xl border bg-muted/30 p-3 flex items-center gap-3">
-              <div className="flex-1 min-w-0">
-                <p className="text-xs font-medium">Needs columns: <strong>ITEM</strong>, <strong>{mode === 'retail' ? 'O/STOCK' : 'OPENING STOCK'}</strong>, <strong>{mode === 'retail' ? 'C/STOCK' : 'c/stock'}</strong></p>
-              </div>
+              <p className="text-xs font-medium flex-1">Needs columns: <strong>ITEM</strong>, <strong>{mode === 'retail' ? 'O/STOCK' : 'OPENING STOCK'}</strong>, <strong>{mode === 'retail' ? 'C/STOCK' : 'c/stock'}</strong></p>
               <Button size="sm" variant="outline" className="shrink-0 gap-1.5" onClick={() => downloadTemplate(mode)}>
                 <Download className="w-3.5 h-3.5" />Template
               </Button>
             </div>
 
-            <div
-              className="rounded-xl border-2 border-dashed border-muted-foreground/20 p-5 text-center space-y-2 hover:border-muted-foreground/40 transition-colors cursor-pointer"
+            {/* Drop zone */}
+            <div className="rounded-xl border-2 border-dashed border-muted-foreground/20 p-5 text-center space-y-2 hover:border-muted-foreground/40 transition-colors cursor-pointer"
               onClick={() => fileRef.current?.click()}
               onDragOver={e => e.preventDefault()}
-              onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handleFile(f) }}
-            >
+              onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handleFile(f) }}>
               <Upload className="w-6 h-6 mx-auto text-muted-foreground/50" />
               <div>
                 <p className="text-sm font-medium">{file ? file.name : 'Drop your Excel file here'}</p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  {file ? `Parsed for ${fmtMonth(selectedDate)}` : '.xlsx or .xls'}
-                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">{file ? `Parsed for ${fmtMonth(selectedDate)}` : '.xlsx or .xls'}</p>
               </div>
               <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden"
                 onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
@@ -931,129 +1026,213 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode }: {
               </div>
             )}
 
-            {rows.length > 0 && (
+            {(rows.length > 0 || unmatchedRows.length > 0) && (
               <>
                 {/* Match banner */}
-                <div className="rounded-xl border bg-muted/30 p-3 space-y-1">
-                  <div className="flex items-center gap-2">
-                    <Check className="w-4 h-4 text-emerald-500" />
-                    <span className="text-sm font-medium text-emerald-700">{rows.length} items matched</span>
-                  </div>
-                  {unmatched.length > 0 && (
-                    <p className="text-xs text-amber-600 flex items-start gap-1">
-                      <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
-                      {unmatched.length} skipped (not in item list): {unmatched.join(', ')}{unmatched.length === 20 ? '…' : ''}
-                    </p>
+                <div className="rounded-xl border bg-muted/30 p-3 flex items-center gap-3 flex-wrap">
+                  <Check className="w-4 h-4 text-emerald-500 shrink-0" />
+                  <span className="text-sm font-medium text-emerald-700">{rows.length} items matched</span>
+                  {unmatchedRows.length > 0 && (
+                    <span className="text-xs text-amber-600 flex items-center gap-1">
+                      <AlertTriangle className="w-3 h-3" />{unmatchedRows.length} not found in item list
+                    </span>
                   )}
                 </div>
 
-                {/* Totals */}
-                <div className={`grid gap-3 ${mode === 'retail' ? 'grid-cols-4' : 'grid-cols-3'}`}>
-                  {[
-                    { label: 'Total Opening', value: totals.opening.toLocaleString('en-ZA') },
-                    { label: 'Total Closing',  value: totals.closing.toLocaleString('en-ZA') },
-                    { label: 'Total Purchases', value: totals.received.toLocaleString('en-ZA') },
-                    ...(mode === 'retail' ? [{ label: 'Total Revenue', value: ZAR(totals.revenue) }] : []),
-                  ].map(({ label, value }) => (
-                    <div key={label} className="rounded-xl border bg-card p-3 text-center">
-                      <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">{label}</p>
-                      <p className="font-bold text-sm tabular-nums">{value}</p>
-                    </div>
-                  ))}
-                </div>
+                {/* ── Unmatched items section ── */}
+                {unmatchedRows.length > 0 && (
+                  <div className="rounded-xl border">
+                    <button
+                      className="w-full px-3 py-2 bg-amber-50 border-b flex items-center gap-2 text-left hover:bg-amber-100 transition-colors rounded-t-xl"
+                      onClick={() => setShowUnmatched(v => !v)}>
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                      <span className="text-xs font-semibold text-amber-700">
+                        {unmatchedRows.length} items not found — assign a category below to create &amp; import them
+                      </span>
+                      <ChevronDown className={`w-3.5 h-3.5 ml-auto text-amber-600 transition-transform ${showUnmatched ? 'rotate-180' : ''}`} />
+                    </button>
 
-                {/* Category breakdown */}
-                <div className="rounded-xl border overflow-hidden">
-                  <div className="px-3 py-2 bg-muted/50 border-b">
-                    <p className="text-xs font-semibold">Category Breakdown</p>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <Table>
-                      <TableHeader>
-                        <TableRow className="bg-muted/20">
-                          <TableHead className="text-xs font-semibold">Category</TableHead>
-                          <TableHead className="text-right text-xs font-semibold">Opening</TableHead>
-                          <TableHead className="text-right text-xs font-semibold">Closing</TableHead>
-                          <TableHead className="text-right text-xs font-semibold">Purchases</TableHead>
-                          {mode === 'retail' && <TableHead className="text-right text-xs font-semibold">Revenue</TableHead>}
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {categoryStats.map(([cat, s]) => (
-                          <TableRow key={cat}>
-                            <TableCell className="text-xs font-medium py-1.5">{cat}</TableCell>
-                            <TableCell className="text-right text-xs tabular-nums py-1.5">{s.opening.toLocaleString('en-ZA')}</TableCell>
-                            <TableCell className="text-right text-xs tabular-nums py-1.5">{s.closing.toLocaleString('en-ZA')}</TableCell>
-                            <TableCell className="text-right text-xs tabular-nums py-1.5">{s.received.toLocaleString('en-ZA')}</TableCell>
-                            {mode === 'retail' && <TableCell className="text-right text-xs tabular-nums py-1.5">{ZAR(s.revenue)}</TableCell>}
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                </div>
+                    {showUnmatched && (
+                      <>
+                        <div className="overflow-x-auto overflow-y-auto h-[50vh]">
+                          <Table>
+                            <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur-sm z-10">
+                              <TableRow>
+                                <TableHead className="w-8 text-xs text-center sticky left-0 bg-muted/80 z-20">Inc.</TableHead>
+                                <TableHead className="text-xs">Item description</TableHead>
+                                <TableHead className="text-right text-xs w-20">Open Qty</TableHead>
+                                <TableHead className="text-right text-xs w-20">Close Qty</TableHead>
+                                <TableHead className="text-right text-xs w-24">Purchased</TableHead>
+                                <TableHead className="text-right text-xs w-20">Sold</TableHead>
+                                <TableHead className="text-right text-xs w-28">Revenue</TableHead>
+                                <TableHead className="text-xs w-44">Assign category</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {unmatchedRows.map((ur, i) => (
+                                <TableRow key={i}
+                                  className={`cursor-pointer ${!ur.include ? 'opacity-50' : ''} ${highlightedRawRow === ur.rawRowIdx ? 'bg-yellow-50' : ''}`}
+                                  onClick={() => setHighlightedRawRow(ur.rawRowIdx)}>
+                                  <TableCell className="py-1 w-8 text-center sticky left-0 bg-background z-10">
+                                    <Checkbox checked={ur.include}
+                                      onCheckedChange={v => setUnmatchedRows(r => r.map((row, j) => j === i ? { ...row, include: !!v } : row))} />
+                                  </TableCell>
+                                  <TableCell className="text-xs font-medium py-1 max-w-[220px] truncate" title={ur.description}>{ur.description}</TableCell>
+                                  <TableCell className="text-right text-xs tabular-nums py-1">{ur.opening_stock}</TableCell>
+                                  <TableCell className="text-right text-xs tabular-nums py-1">{ur.closing_stock}</TableCell>
+                                  <TableCell className="text-right text-xs tabular-nums py-1">{ur.new_received}</TableCell>
+                                  <TableCell className="text-right text-xs tabular-nums py-1">{ur.items_sold ?? '—'}</TableCell>
+                                  <TableCell className="text-right text-xs tabular-nums py-1">{ur.revenue != null ? ZAR(ur.revenue) : '—'}</TableCell>
+                                  <TableCell className="py-1" onClick={e => e.stopPropagation()}>
+                                    <Select
+                                      value={ur.category_id?.toString() ?? ''}
+                                      onValueChange={v => setUnmatchedRows(r => r.map((row, j) => j === i ? { ...row, category_id: parseInt(v), include: true } : row))}>
+                                      <SelectTrigger className="h-7 text-xs w-44">
+                                        <SelectValue placeholder="Select category…" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {catList.map(c => (
+                                          <SelectItem key={c.category_id} value={c.category_id.toString()}>{c.name}</SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
 
-                {/* Editable items */}
-                <div className="rounded-xl border overflow-hidden">
-                  <div className="px-3 py-2 bg-muted/50 border-b">
-                    <p className="text-xs font-semibold">Review & Edit Items</p>
-                  </div>
-                  <div className="overflow-x-auto max-h-60 overflow-y-auto">
-                    <Table>
-                      <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur-sm z-10">
-                        <TableRow>
-                          <TableHead className="text-xs">Item</TableHead>
-                          <TableHead className="text-right text-xs w-24">Open</TableHead>
-                          <TableHead className="text-right text-xs w-24">Received</TableHead>
-                          <TableHead className="text-right text-xs w-24">Close</TableHead>
-                          {mode === 'retail' && <TableHead className="text-right text-xs w-24">Sold</TableHead>}
-                          {mode === 'retail' && <TableHead className="text-right text-xs w-28">Revenue</TableHead>}
-                          <TableHead className="w-8" />
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {rows.map((row, i) => (
-                          <TableRow key={i} className="group">
-                            <TableCell className="text-xs font-medium truncate max-w-[180px] py-1" title={row._description}>
-                              {row._description}
-                            </TableCell>
-                            <TableCell className="py-0.5">
-                              <Input type="number" value={row.opening_stock ?? ''} onChange={e => updateRow(i, 'opening_stock', e.target.value)}
-                                className="h-7 text-xs text-right w-20 ml-auto" />
-                            </TableCell>
-                            <TableCell className="py-0.5">
-                              <Input type="number" value={row.new_received ?? ''} onChange={e => updateRow(i, 'new_received', e.target.value)}
-                                className="h-7 text-xs text-right w-20 ml-auto" />
-                            </TableCell>
-                            <TableCell className="py-0.5">
-                              <Input type="number" value={row.closing_stock ?? ''} onChange={e => updateRow(i, 'closing_stock', e.target.value)}
-                                className="h-7 text-xs text-right w-20 ml-auto" />
-                            </TableCell>
-                            {mode === 'retail' && (
-                              <TableCell className="py-0.5">
-                                <Input type="number" value={row.items_sold ?? ''} onChange={e => updateRow(i, 'items_sold', e.target.value)}
-                                  className="h-7 text-xs text-right w-20 ml-auto" />
-                              </TableCell>
-                            )}
-                            {mode === 'retail' && (
-                              <TableCell className="py-0.5">
-                                <Input type="number" value={row.revenue ?? ''} onChange={e => updateRow(i, 'revenue', e.target.value)}
-                                  className="h-7 text-xs text-right w-24 ml-auto" />
-                              </TableCell>
-                            )}
-                            <TableCell className="py-0.5 w-8">
-                              <Button variant="ghost" size="icon"
-                                className="h-7 w-7 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
-                                onClick={() => removeRow(i)}>
-                                <Trash2 className="w-3.5 h-3.5" />
+                        {/* New category inline form */}
+                        <div className="border-t px-3 py-2 flex items-center gap-2 bg-muted/20">
+                          {addingCat ? (
+                            <>
+                              <Input value={newCatName} onChange={e => setNewCatName(e.target.value)}
+                                placeholder="New category name…" className="h-7 text-xs flex-1 max-w-xs" autoFocus
+                                onKeyDown={e => { if (e.key === 'Enter') handleAddCategory(); if (e.key === 'Escape') { setAddingCat(false); setNewCatName('') } }} />
+                              <Button size="sm" className="h-7 text-xs px-3" onClick={handleAddCategory} disabled={!newCatName.trim() || savingCat}>
+                                {savingCat && <Loader2 className="w-3 h-3 mr-1 animate-spin" />}Save
                               </Button>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
+                              <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => { setAddingCat(false); setNewCatName('') }}>Cancel</Button>
+                            </>
+                          ) : (
+                            <Button size="sm" variant="outline" className="h-7 text-xs gap-1.5" onClick={() => setAddingCat(true)}>
+                              <Plus className="w-3 h-3" />New category
+                            </Button>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </div>
-                </div>
+                )}
+
+                {/* Totals + breakdown + editable items (only when matched rows exist) */}
+                {rows.length > 0 && (
+                  <>
+                    <div className={`grid gap-3 ${mode === 'retail' ? 'grid-cols-4' : 'grid-cols-3'}`}>
+                      {[
+                        { label: 'Total Opening',  value: totals.opening.toLocaleString('en-ZA') },
+                        { label: 'Total Closing',  value: totals.closing.toLocaleString('en-ZA') },
+                        { label: 'Total Purchases', value: totals.received.toLocaleString('en-ZA') },
+                        ...(mode === 'retail' ? [{ label: 'Total Revenue', value: ZAR(totals.revenue) }] : []),
+                      ].map(({ label, value }) => (
+                        <div key={label} className="rounded-xl border bg-card p-3 text-center">
+                          <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">{label}</p>
+                          <p className="font-bold text-sm tabular-nums">{value}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="rounded-xl border overflow-hidden">
+                      <div className="px-3 py-2 bg-muted/50 border-b"><p className="text-xs font-semibold">Category Breakdown</p></div>
+                      <div className="overflow-x-auto">
+                        <Table>
+                          <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur-sm z-10">
+                            <TableRow className="bg-muted/20">
+                              <TableHead className="text-xs font-semibold">Category</TableHead>
+                              <TableHead className="text-right text-xs font-semibold">Open Qty</TableHead>
+                              <TableHead className="text-right text-xs font-semibold">Close Qty</TableHead>
+                              <TableHead className="text-right text-xs font-semibold">Purchases</TableHead>
+                              {mode === 'retail' && <TableHead className="text-right text-xs font-semibold">Open Value</TableHead>}
+                              {mode === 'retail' && <TableHead className="text-right text-xs font-semibold">Close Value</TableHead>}
+                              {mode === 'retail' && <TableHead className="text-right text-xs font-semibold">Revenue</TableHead>}
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {categoryStats.map(([cat, s]) => (
+                              <TableRow key={cat}>
+                                <TableCell className="text-xs font-medium py-1.5">{cat}</TableCell>
+                                <TableCell className="text-right text-xs tabular-nums py-1.5">{s.opening.toLocaleString('en-ZA')}</TableCell>
+                                <TableCell className="text-right text-xs tabular-nums py-1.5">{s.closing.toLocaleString('en-ZA')}</TableCell>
+                                <TableCell className="text-right text-xs tabular-nums py-1.5">{s.received.toLocaleString('en-ZA')}</TableCell>
+                                {mode === 'retail' && <TableCell className="text-right text-xs tabular-nums py-1.5">{ZAR(s.opValue)}</TableCell>}
+                                {mode === 'retail' && <TableCell className="text-right text-xs tabular-nums py-1.5">{ZAR(s.clValue)}</TableCell>}
+                                {mode === 'retail' && <TableCell className="text-right text-xs tabular-nums py-1.5">{ZAR(s.revenue)}</TableCell>}
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border overflow-hidden">
+                      <div className="px-3 py-2 bg-muted/50 border-b"><p className="text-xs font-semibold">Review & Edit Items</p></div>
+                      <div className="overflow-x-auto h-[50vh] overflow-y-auto">
+                        <Table>
+                          <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur-sm z-10">
+                            <TableRow>
+                              <TableHead className="text-xs">Item</TableHead>
+                              <TableHead className="text-right text-xs w-24">Cost</TableHead>
+                              <TableHead className="text-right text-xs w-24">Price</TableHead>
+                              <TableHead className="text-right text-xs w-24">Open</TableHead>
+                              <TableHead className="text-right text-xs w-24">Received</TableHead>
+                              <TableHead className="text-right text-xs w-24">Close</TableHead>
+                              {mode === 'retail' && <TableHead className="text-right text-xs w-24">Sold</TableHead>}
+                              {mode === 'retail' && <TableHead className="text-right text-xs w-28">Revenue</TableHead>}
+                              <TableHead className="w-8" />
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {rows.map((row, i) => (
+                              <TableRow key={i}
+                                className={`group cursor-pointer ${highlightedRawRow === row._rawRowIdx ? 'bg-yellow-50' : ''}`}
+                                onClick={() => setHighlightedRawRow(row._rawRowIdx)}>
+                                <TableCell className="text-xs font-medium truncate max-w-[180px] py-1" title={row._description}>{row._description}</TableCell>
+                                <TableCell className="text-right text-xs tabular-nums py-1">{ZAR(priceMap.get(row.item_id)?.unit_cost ?? null)}</TableCell>
+                                <TableCell className="text-right text-xs tabular-nums py-1">{ZAR(priceMap.get(row.item_id)?.sell_price ?? null)}</TableCell>
+                                <TableCell className="py-0.5"><Input type="number" value={row.opening_stock ?? ''} onChange={e => updateRow(i, 'opening_stock', e.target.value)} className="h-7 text-xs text-right w-20 ml-auto" /></TableCell>
+                                <TableCell className="py-0.5"><Input type="number" value={row.new_received ?? ''} onChange={e => updateRow(i, 'new_received', e.target.value)} className="h-7 text-xs text-right w-20 ml-auto" /></TableCell>
+                                <TableCell className="py-0.5"><Input type="number" value={row.closing_stock ?? ''} onChange={e => updateRow(i, 'closing_stock', e.target.value)} className="h-7 text-xs text-right w-20 ml-auto" /></TableCell>
+                                {mode === 'retail' && <TableCell className="py-0.5"><Input type="number" value={row.items_sold ?? ''} onChange={e => updateRow(i, 'items_sold', e.target.value)} className="h-7 text-xs text-right w-20 ml-auto" /></TableCell>}
+                                {mode === 'retail' && <TableCell className="py-0.5"><Input type="number" value={row.revenue ?? ''} onChange={e => updateRow(i, 'revenue', e.target.value)} className="h-7 text-xs text-right w-24 ml-auto" /></TableCell>}
+                                <TableCell className="py-0.5 w-8">
+                                  <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => removeRow(i)}>
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </div>
+
+                    {mode === 'retail' && (
+                      <div className="grid grid-cols-3 gap-3">
+                        {[
+                          { label: 'Opening Stock Value', value: ZAR(valueStats.opValue) },
+                          { label: 'Closing Stock Value',  value: ZAR(valueStats.clValue) },
+                          { label: 'Total Revenue',        value: ZAR(valueStats.revenue) },
+                        ].map(({ label, value }) => (
+                          <div key={label} className="rounded-xl border bg-card p-3 text-center">
+                            <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">{label}</p>
+                            <p className="font-bold text-sm tabular-nums">{value}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
               </>
             )}
           </div>
@@ -1062,34 +1241,30 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode }: {
           {showRaw && (
             <div className="flex flex-col overflow-hidden flex-1">
               <div className="px-3 py-2 border-b bg-muted/50 shrink-0 flex items-center justify-between">
-                <p className="text-xs font-semibold flex items-center gap-1.5">
-                  <FileSpreadsheet className="w-3.5 h-3.5" />Original File
-                </p>
+                <p className="text-xs font-semibold flex items-center gap-1.5"><FileSpreadsheet className="w-3.5 h-3.5" />Original File</p>
                 <p className="text-[10px] text-muted-foreground">{rawData.length} rows · {maxCols} cols</p>
               </div>
-              <div className="overflow-auto flex-1">
+              <div className="overflow-auto flex-1" ref={rawPanelRef}>
                 {rawData.length > 0 ? (
                   <table className="text-[11px] border-collapse">
                     <thead className="sticky top-0 z-10">
                       <tr>
                         <th className="bg-slate-200 border border-slate-300 px-2 py-0.5 text-center text-slate-500 font-medium min-w-[32px] sticky left-0 z-20" />
                         {Array.from({ length: maxCols }, (_, i) => (
-                          <th key={i} className="bg-slate-200 border border-slate-300 px-3 py-0.5 text-center text-slate-600 font-semibold min-w-[80px]">
-                            {colLetter(i)}
-                          </th>
+                          <th key={i} className="bg-slate-200 border border-slate-300 px-3 py-0.5 text-center text-slate-600 font-semibold min-w-[80px]">{colLetter(i)}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
                       {rawData.slice(0, 300).map((row, ri) => {
-                        const isHeader = ri === headerRowIdx
+                        const isHeader     = ri === headerRowIdx
+                        const isHighlighted = ri === highlightedRawRow
                         return (
-                          <tr key={ri} className={isHeader ? 'bg-blue-50' : ri % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'}>
-                            <td className={`border border-slate-200 px-2 py-0.5 text-center font-medium sticky left-0 z-10 text-[10px] min-w-[32px] ${isHeader ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-400'}`}>
-                              {ri + 1}
-                            </td>
+                          <tr key={ri} data-raw-row={ri}
+                            className={isHighlighted ? 'bg-yellow-200' : isHeader ? 'bg-blue-50' : ri % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'}>
+                            <td className={`border border-slate-200 px-2 py-0.5 text-center font-medium sticky left-0 z-10 text-[10px] min-w-[32px] ${isHighlighted ? 'bg-yellow-300 text-yellow-800' : isHeader ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-400'}`}>{ri + 1}</td>
                             {Array.from({ length: maxCols }, (_, ci) => (
-                              <td key={ci} className={`border border-slate-200 px-2 py-0.5 whitespace-nowrap max-w-[200px] overflow-hidden text-ellipsis ${isHeader ? 'font-semibold text-blue-800' : 'text-slate-700'}`}>
+                              <td key={ci} className={`border border-slate-200 px-2 py-0.5 whitespace-nowrap max-w-[200px] overflow-hidden text-ellipsis ${isHighlighted ? 'font-semibold text-yellow-900' : isHeader ? 'font-semibold text-blue-800' : 'text-slate-700'}`}>
                                 {row[ci] != null ? String(row[ci]) : ''}
                               </td>
                             ))}
@@ -1111,9 +1286,9 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode }: {
         {/* ── Footer ── */}
         <div className="border-t px-5 py-3 flex justify-end gap-2 shrink-0 bg-background">
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={handleSave} disabled={!rows.length || saving}>
+          <Button onClick={handleSave} disabled={(!rows.length && !includedNew) || saving}>
             {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-            Import {rows.length > 0 ? `${rows.length} items to ${fmtMonth(selectedDate)}` : ''}
+            Import {(rows.length + includedNew) > 0 ? `${rows.length + includedNew} items to ${fmtMonth(selectedDate)}` : ''}
           </Button>
         </div>
       </DialogContent>
@@ -1905,8 +2080,8 @@ export function StockTab() {
 
       <RetailCountModal open={showRetailCount} onClose={() => setShowRetailCount(false)} items={retailItems.filter(i => i.is_active)} existingCounts={retailCounts} countDate={retailMonth} onSave={saveRetailCount} />
       <FoodCountModal   open={showFoodCount}   onClose={() => setShowFoodCount(false)}   items={foodItems.filter(i => i.is_active)}   existingCounts={foodCounts}   countDate={foodMonth}   onSave={saveFoodCount} />
-      <ExcelUploadModal open={showRetailUpload} onClose={() => setShowRetailUpload(false)} items={retailItems} onSave={saveRetailCount} countDate={retailMonth} mode="retail" />
-      <ExcelUploadModal open={showFoodUpload}   onClose={() => setShowFoodUpload(false)}   items={foodItems}   onSave={saveFoodCount}   countDate={foodMonth}   mode="food" />
+      <ExcelUploadModal open={showRetailUpload} onClose={() => setShowRetailUpload(false)} items={retailItems} onSave={saveRetailCount} countDate={retailMonth} mode="retail" categories={retailCategories} />
+      <ExcelUploadModal open={showFoodUpload}   onClose={() => setShowFoodUpload(false)}   items={foodItems}   onSave={saveFoodCount}   countDate={foodMonth}   mode="food"   categories={foodCategories} />
       <RetailItemModal  open={showRetailItem}   onClose={() => setShowRetailItem(false)}  categories={retailCategories} initial={editRetailItem} onSave={saveRetailItem} />
       <FoodItemModal    open={showFoodItem}     onClose={() => setShowFoodItem(false)}    categories={foodCategories}   initial={editFoodItem}   onSave={saveFoodItem} />
     </div>
