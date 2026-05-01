@@ -196,7 +196,7 @@ function VendorModal({
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="w-full max-w-lg h-[100dvh] sm:h-auto sm:max-h-[90vh] overflow-y-auto p-4 sm:p-6 rounded-none sm:rounded-xl">
+      <DialogContent className="w-full max-w-lg h-dvh sm:h-auto sm:max-h-[90vh] overflow-y-auto p-4 sm:p-6 rounded-none sm:rounded-xl">
         <DialogHeader>
           <DialogTitle>{isEdit ? 'Edit vendor' : 'Add vendor'}</DialogTitle>
         </DialogHeader>
