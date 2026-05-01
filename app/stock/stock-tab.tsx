@@ -889,17 +889,24 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
             })
             continue
           }
-          const os = parseFloat(row[openCol])  || 0
-          const nr = recvCol >= 0 ? (parseFloat(row[recvCol]) || 0) : 0
-          const cs = parseFloat(row[closeCol]) || 0
+          const os          = parseFloat(row[openCol])  || 0
+          const purchases   = recvCol >= 0 ? (parseFloat(row[recvCol]) || 0) : 0
+          const cs          = parseFloat(row[closeCol]) || 0
+          // Received: if opening > closing, stock decreased — no extra receiving; if closing > opening, factor in the difference
+          const nr = (os - cs < 0) ? (cs - os + purchases) : purchases
+          // Sold: if opening > closing (stock decreased), sold = difference + purchases; else just purchases
+          const sold = (os - cs > 0) ? (os - cs + purchases) : purchases
+          const sellP = priceMap.get(itemId)?.sell_price ?? 0
+          // Revenue: same as sold * price  →  (os-cs)*price + purchases*price when os>cs, else purchases*price
+          const revenue = sold * sellP
           const base: any = {
             item_id: itemId, count_date: selectedDate,
             opening_stock: os, new_received: nr, closing_stock: cs, notes: null,
             _description: desc, _rawRowIdx: i,
           }
           if (mode === 'retail') {
-            base.items_sold = soldCol >= 0 && row[soldCol] != null ? (parseFloat(row[soldCol]) || null) : null
-            base.revenue    = revCol  >= 0 && row[revCol]  != null ? (parseFloat(row[revCol])  || null) : null
+            base.items_sold = sold
+            base.revenue    = revenue
           }
           parsed.push(base)
         }
@@ -959,7 +966,7 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="w-screen !max-w-none h-screen !max-h-none p-0 !rounded-none overflow-hidden flex flex-col top-0 left-0 !translate-x-0 !translate-y-0">
+      <DialogContent className="w-screen !max-w-none  h-screen p-0 !rounded-none overflow-hidden flex flex-col top-0 left-0 !translate-x-0 !translate-y-0">
 
         {/* ── Header ── */}
         <div className="px-5 pt-4 pb-3 border-b shrink-0 flex items-center gap-3 pr-14">
@@ -979,7 +986,7 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
         {/* ── Body ── */}
         <div className="flex flex-1 overflow-hidden">
 
-          {/* Left panel */}
+          {/* Left panel — own scroll so content can grow past viewport */}
           <div className={`flex flex-col overflow-y-auto p-5 gap-4 ${showRaw ? 'w-[58%]' : 'flex-1'} border-r`}>
 
             {/* Month selector */}
@@ -1143,10 +1150,10 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
                       ))}
                     </div>
 
-                    <div className="rounded-xl border overflow-hidden">
-                      <div className="px-3 py-2 bg-muted/50 border-b"><p className="text-xs font-semibold">Category Breakdown</p></div>
-                      <div className="overflow-x-auto">
-                        <Table>
+                    <div className="rounded-xl border flex flex-col">
+                      <div className="px-3 py-2 bg-muted/50 border-b shrink-0"><p className="text-xs font-semibold">Category Breakdown</p></div>
+                      <div className="overflow-x-auto overflow-y-auto flex-1 min-h-full">
+                        <Table className='h-[30vh]'>
                           <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur-sm z-10">
                             <TableRow className="bg-muted/20">
                               <TableHead className="text-xs font-semibold">Category</TableHead>
@@ -1175,13 +1182,16 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
                       </div>
                     </div>
 
-                    <div className="rounded-xl border overflow-hidden">
-                      <div className="px-3 py-2 bg-muted/50 border-b"><p className="text-xs font-semibold">Review & Edit Items</p></div>
-                      <div className="overflow-x-auto h-[50vh] overflow-y-auto">
-                        <Table>
+                    <div className="rounded-xl border ">
+                      <div className="px-3 py-2 bg-muted/50 border-b">
+                        <p className="text-xs font-semibold">Review & Edit Item</p>
+                      </div>
+                      <div className="overflow-x-auto h-[50vh]">
+                        <Table className='  overflow-y-scroll'>
                           <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur-sm z-10">
                             <TableRow>
                               <TableHead className="text-xs">Item</TableHead>
+                              <TableHead className="text-xs w-32">Category</TableHead>
                               <TableHead className="text-right text-xs w-24">Cost</TableHead>
                               <TableHead className="text-right text-xs w-24">Price</TableHead>
                               <TableHead className="text-right text-xs w-24">Open</TableHead>
@@ -1192,12 +1202,13 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
                               <TableHead className="w-8" />
                             </TableRow>
                           </TableHeader>
-                          <TableBody>
+                          <TableBody className=''>
                             {rows.map((row, i) => (
                               <TableRow key={i}
                                 className={`group cursor-pointer ${highlightedRawRow === row._rawRowIdx ? 'bg-yellow-50' : ''}`}
                                 onClick={() => setHighlightedRawRow(row._rawRowIdx)}>
                                 <TableCell className="text-xs font-medium truncate max-w-[180px] py-1" title={row._description}>{row._description}</TableCell>
+                                <TableCell className="text-xs text-muted-foreground py-1 truncate max-w-[120px]">{idToCategory.get(row.item_id) ?? '—'}</TableCell>
                                 <TableCell className="text-right text-xs tabular-nums py-1">{ZAR(priceMap.get(row.item_id)?.unit_cost ?? null)}</TableCell>
                                 <TableCell className="text-right text-xs tabular-nums py-1">{ZAR(priceMap.get(row.item_id)?.sell_price ?? null)}</TableCell>
                                 <TableCell className="py-0.5"><Input type="number" value={row.opening_stock ?? ''} onChange={e => updateRow(i, 'opening_stock', e.target.value)} className="h-7 text-xs text-right w-20 ml-auto" /></TableCell>
@@ -1239,7 +1250,7 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
 
           {/* ── Right panel: raw Excel grid ── */}
           {showRaw && (
-            <div className="flex flex-col overflow-hidden flex-1">
+            <div className="flex flex-col flex-1 overflow-hidden">
               <div className="px-3 py-2 border-b bg-muted/50 shrink-0 flex items-center justify-between">
                 <p className="text-xs font-semibold flex items-center gap-1.5"><FileSpreadsheet className="w-3.5 h-3.5" />Original File</p>
                 <p className="text-[10px] text-muted-foreground">{rawData.length} rows · {maxCols} cols</p>
