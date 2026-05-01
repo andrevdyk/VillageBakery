@@ -785,7 +785,7 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
     const map = new Map<string, { opening: number; closing: number; received: number; revenue: number; opValue: number; clValue: number }>()
     for (const row of rows) {
       const cat   = idToCategory.get(row.item_id) ?? 'Uncategorised'
-      const price = priceMap.get(row.item_id)?.sell_price ?? 0
+      const price = priceMap.get(row.item_id)?.unit_cost ?? 0
       const e = map.get(cat) ?? { opening: 0, closing: 0, received: 0, revenue: 0, opValue: 0, clValue: 0 }
       e.opening  += row.opening_stock ?? 0
       e.closing  += row.closing_stock ?? 0
@@ -877,27 +877,29 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
           const isAllCaps = desc === desc.toUpperCase() && /^[A-Z\s&\/\-]+$/.test(desc)
           if (isAllCaps && isAllZero) continue
           const itemId = descMap.get(desc.toUpperCase())
+          // In this Excel format the "Items Sold" column holds new stock received (purchases).
+          // Read it first; fall back to "NEW STOCK RECEIVED" if Items Sold is absent.
+          const rowPurchases = (soldCol >= 0 && row[soldCol] != null ? parseFloat(row[soldCol]) || 0 : null)
+                            ?? (recvCol >= 0 ? parseFloat(row[recvCol]) || 0 : 0)
           if (!itemId) {
             if (desc.length > 2) unmatched_.push({
               description: desc,
               opening_stock: parseFloat(row[openCol]) || 0,
-              new_received:  recvCol >= 0 ? (parseFloat(row[recvCol]) || 0) : 0,
+              new_received:  rowPurchases,
               closing_stock: parseFloat(row[closeCol]) || 0,
-              items_sold: soldCol >= 0 && row[soldCol] != null ? (parseFloat(row[soldCol]) || null) : null,
-              revenue:    revCol  >= 0 && row[revCol]  != null ? (parseFloat(row[revCol])  || null) : null,
+              items_sold: null,
+              revenue:    revCol >= 0 && row[revCol] != null ? (parseFloat(row[revCol]) || null) : null,
               category_id: null, include: false, rawRowIdx: i,
             })
             continue
           }
-          const os          = parseFloat(row[openCol])  || 0
-          const purchases   = recvCol >= 0 ? (parseFloat(row[recvCol]) || 0) : 0
-          const cs          = parseFloat(row[closeCol]) || 0
-          // Received: if opening > closing, stock decreased — no extra receiving; if closing > opening, factor in the difference
-          const nr = (os - cs < 0) ? (cs - os + purchases) : purchases
-          // Sold: if opening > closing (stock decreased), sold = difference + purchases; else just purchases
-          const sold = (os - cs > 0) ? (os - cs + purchases) : purchases
-          const sellP = priceMap.get(itemId)?.sell_price ?? 0
-          // Revenue: same as sold * price  →  (os-cs)*price + purchases*price when os>cs, else purchases*price
+          const os = parseFloat(row[openCol])  || 0
+          const cs = parseFloat(row[closeCol]) || 0
+          // Received: if closing > opening, stock grew — include the increase on top of purchases
+          const nr   = (os - cs < 0) ? (cs - os + rowPurchases) : rowPurchases
+          // Sold: if opening > closing, stock shrank — include the decrease on top of purchases
+          const sold = (os - cs > 0) ? (os - cs + rowPurchases) : rowPurchases
+          const sellP   = priceMap.get(itemId)?.sell_price ?? 0
           const revenue = sold * sellP
           const base: any = {
             item_id: itemId, count_date: selectedDate,
@@ -1202,7 +1204,7 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
                               <TableHead className="w-8" />
                             </TableRow>
                           </TableHeader>
-                          <TableBody className=''>
+                          <TableBody>
                             {rows.map((row, i) => (
                               <TableRow key={i}
                                 className={`group cursor-pointer ${highlightedRawRow === row._rawRowIdx ? 'bg-yellow-50' : ''}`}
