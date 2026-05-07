@@ -758,7 +758,9 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
   const [rawData, setRawData]           = useState<any[][]>([])
   const [headerRowIdx, setHeaderRowIdx] = useState(-1)
   const [error, setError]               = useState('')
+  const [saveError, setSaveError]       = useState('')
   const [saving, setSaving]             = useState(false)
+  const [addingToReview, setAddingToReview] = useState(false)
   const [unmatchedRows, setUnmatchedRows] = useState<UnmatchedRow[]>([])
   const [showUnmatched, setShowUnmatched] = useState(false)
   const [catList, setCatList]           = useState<StockCategory[]>([])
@@ -776,7 +778,7 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
 
   useEffect(() => {
     if (!open) {
-      setFile(null); setRows([]); setRawData([]); setHeaderRowIdx(-1); setError('')
+      setFile(null); setRows([]); setRawData([]); setHeaderRowIdx(-1); setError(''); setSaveError('')
       setUnmatchedRows([]); setShowUnmatched(false); setShowRaw(false)
       setHighlightedRawRow(null); setAddingCat(false); setNewCatName('')
       setCostUpdateMap(new Map())
@@ -1004,41 +1006,96 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
     setNewCatName(''); setAddingCat(false); setSavingCat(false)
   }
 
-  async function handleSave() {
-    const toCreate = unmatchedRows.filter(u => u.include && u.category_id)
-    if (!rows.length && !toCreate.length) return
-    setSaving(true)
+  // Add selected unmatched rows to the review table (creates items in DB immediately)
+  async function handleAddToReview() {
+    const toAdd = unmatchedRows.filter(u => u.include && u.category_id)
+    if (!toAdd.length) return
+    setAddingToReview(true)
     const supabase = createClient()
     const itemTable = mode === 'retail' ? 'vb_retail_stock_item' : 'vb_food_stock_item'
     const costField = mode === 'retail' ? 'cost_per_item' : 'cost_per_unit'
+    const newRows: any[] = []
+    const newCostMap = new Map(costUpdateMap)
 
-    // Strip internal tracking fields from count rows
-    const clean = rows.map(({ _description, _rawRowIdx, ...rest }) => rest)
-
-    // Update item cost prices using the dedicated costUpdateMap (item_id → new cost from Excel)
-    if (costUpdateMap.size > 0) {
-      await Promise.all(Array.from(costUpdateMap.entries()).map(([itemId, cost]) =>
-        supabase.from(itemTable).update({ [costField]: cost }).eq('item_id', itemId)
-      ))
-    }
-
-    // Create new items from the unmatched rows the user chose to include
-    for (const ur of toCreate) {
+    for (const ur of toAdd) {
       const newItemData: Record<string, any> = {
         description: ur.description, category_id: ur.category_id, is_active: true,
       }
-      if (ur.plu)           newItemData.plu        = ur.plu
-      if (ur.cost_per_item) newItemData[costField]  = ur.cost_per_item
-      const { data } = await supabase.from(itemTable).insert([newItemData]).select('item_id').single()
-      if (data?.item_id) clean.push({
-        item_id: data.item_id, count_date: selectedDate,
-        opening_stock: ur.opening_stock, new_received: ur.new_received,
-        closing_stock: ur.closing_stock, notes: null,
-        ...(mode === 'retail' ? { items_sold: ur.items_sold, revenue: ur.revenue } : {}),
-      })
+      if (ur.plu)           newItemData.plu       = ur.plu
+      if (ur.cost_per_item) newItemData[costField] = ur.cost_per_item
+      const { data, error } = await supabase.from(itemTable).insert([newItemData]).select('item_id').single()
+      if (error) { setSaveError(`Failed to create "${ur.description}": ${error.message}`); continue }
+      if (data?.item_id) {
+        // Track its cost in the map so the review table shows correct values
+        if (ur.cost_per_item) newCostMap.set(data.item_id, ur.cost_per_item)
+        newRows.push({
+          item_id: data.item_id, count_date: selectedDate,
+          opening_stock: ur.opening_stock, new_received: ur.new_received,
+          closing_stock: ur.closing_stock, notes: null,
+          _description: ur.description,
+          _rawRowIdx: ur.rawRowIdx,
+          _addedCategory: catList.find(c => c.category_id === ur.category_id)?.name ?? '',
+          ...(mode === 'retail' ? { items_sold: ur.items_sold, revenue: ur.revenue } : {}),
+        })
+      }
     }
-    await onSave(clean, selectedDate)
-    setSaving(false); onClose()
+
+    setCostUpdateMap(newCostMap)
+    setRows(r => [...r, ...newRows])
+    // Remove added rows from unmatched list
+    const addedDescs = new Set(toAdd.map(u => u.description))
+    setUnmatchedRows(r => r.filter(u => !addedDescs.has(u.description)))
+    setAddingToReview(false)
+  }
+
+  async function handleSave() {
+    const toCreate = unmatchedRows.filter(u => u.include && u.category_id)
+    if (!rows.length && !toCreate.length) return
+    setSaving(true); setSaveError('')
+    try {
+      const supabase = createClient()
+      const itemTable = mode === 'retail' ? 'vb_retail_stock_item' : 'vb_food_stock_item'
+      const costField = mode === 'retail' ? 'cost_per_item' : 'cost_per_unit'
+
+      // Strip internal tracking fields from count rows; skip rows with no real item_id
+      const clean: any[] = []
+      for (const { _description, _rawRowIdx, _addedCategory, ...rest } of rows) {
+        if (rest.item_id && rest.item_id > 0) clean.push(rest)
+      }
+
+      // Update item cost prices using the dedicated costUpdateMap
+      if (costUpdateMap.size > 0) {
+        const results = await Promise.all(Array.from(costUpdateMap.entries()).map(([itemId, cost]) =>
+          supabase.from(itemTable).update({ [costField]: cost }).eq('item_id', itemId)
+        ))
+        const costErr = results.find(r => r.error)
+        if (costErr?.error) throw new Error(`Cost update failed: ${costErr.error.message}`)
+      }
+
+      // Create any remaining unmatched items the user included (not yet added via review button)
+      for (const ur of toCreate) {
+        const newItemData: Record<string, any> = {
+          description: ur.description, category_id: ur.category_id, is_active: true,
+        }
+        if (ur.plu)           newItemData.plu       = ur.plu
+        if (ur.cost_per_item) newItemData[costField] = ur.cost_per_item
+        const { data, error } = await supabase.from(itemTable).insert([newItemData]).select('item_id').single()
+        if (error) throw new Error(`Failed to create "${ur.description}": ${error.message}`)
+        if (data?.item_id) clean.push({
+          item_id: data.item_id, count_date: selectedDate,
+          opening_stock: ur.opening_stock, new_received: ur.new_received,
+          closing_stock: ur.closing_stock, notes: null,
+          ...(mode === 'retail' ? { items_sold: ur.items_sold, revenue: ur.revenue } : {}),
+        })
+      }
+
+      if (!clean.length) throw new Error('No items to import.')
+      await onSave(clean, selectedDate)
+      setSaving(false); onClose()
+    } catch (err: any) {
+      setSaveError(err.message ?? 'Unknown error — check console')
+      setSaving(false)
+    }
   }
 
   const maxCols    = useMemo(() => rawData.reduce((m, r) => Math.max(m, r.length), 0), [rawData])
@@ -1195,8 +1252,8 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
                           </Table>
                         </div>
 
-                        {/* New category inline form */}
-                        <div className="border-t px-3 py-2 flex items-center gap-2 bg-muted/20">
+                        {/* New category inline form + Add to Review button */}
+                        <div className="border-t px-3 py-2 flex items-center gap-2 bg-muted/20 flex-wrap">
                           {addingCat ? (
                             <>
                               <Input value={newCatName} onChange={e => setNewCatName(e.target.value)}
@@ -1210,6 +1267,16 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
                           ) : (
                             <Button size="sm" variant="outline" className="h-7 text-xs gap-1.5" onClick={() => setAddingCat(true)}>
                               <Plus className="w-3 h-3" />New category
+                            </Button>
+                          )}
+                          {/* Add categorised unmatched items to the Review table */}
+                          {unmatchedRows.filter(u => u.include && u.category_id).length > 0 && (
+                            <Button size="sm" className="h-7 text-xs gap-1.5 ml-auto bg-emerald-600 hover:bg-emerald-700 text-white"
+                              onClick={handleAddToReview} disabled={addingToReview}>
+                              {addingToReview
+                                ? <><Loader2 className="w-3 h-3 animate-spin" />Adding…</>
+                                : <><Check className="w-3 h-3" />Add {unmatchedRows.filter(u => u.include && u.category_id).length} to Review</>
+                              }
                             </Button>
                           )}
                         </div>
@@ -1312,7 +1379,7 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
                                 className={`group cursor-pointer ${highlightedRawRow === row._rawRowIdx ? 'bg-yellow-50' : ''}`}
                                 onClick={() => setHighlightedRawRow(row._rawRowIdx)}>
                                 <TableCell className="text-xs font-medium truncate max-w-[160px] py-1" title={row._description}>{row._description}</TableCell>
-                                <TableCell className="text-xs text-muted-foreground py-1 truncate max-w-[100px]">{idToCategory.get(row.item_id) ?? '—'}</TableCell>
+                                <TableCell className="text-xs text-muted-foreground py-1 truncate max-w-[100px]">{idToCategory.get(row.item_id) ?? row._addedCategory ?? '—'}</TableCell>
                                 {/* Cost cell: show Excel cost; if it differs from stored, strike through old value */}
                                 <TableCell className="text-right text-xs tabular-nums py-1">
                                   {costChanged ? (
@@ -1399,12 +1466,22 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
         </div>
 
         {/* ── Footer ── */}
-        <div className="border-t px-5 py-3 flex justify-end gap-2 shrink-0 bg-background">
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={handleSave} disabled={(!rows.length && !includedNew) || saving}>
-            {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-            Import {(rows.length + includedNew) > 0 ? `${rows.length + includedNew} items to ${fmtMonth(selectedDate)}` : ''}
-          </Button>
+        <div className="border-t px-5 py-3 flex items-center justify-between gap-2 shrink-0 bg-background">
+          <div className="flex-1">
+            {saveError && (
+              <p className="text-xs text-destructive flex items-center gap-1.5">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                {saveError}
+              </p>
+            )}
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <Button variant="outline" onClick={onClose}>Cancel</Button>
+            <Button onClick={handleSave} disabled={(!rows.length && !includedNew) || saving}>
+              {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              Import {(rows.length + includedNew) > 0 ? `${rows.length + includedNew} items to ${fmtMonth(selectedDate)}` : ''}
+            </Button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

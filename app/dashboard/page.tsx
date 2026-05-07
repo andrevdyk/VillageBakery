@@ -58,7 +58,19 @@ interface Expense {
   date_paid: string | null
   supplier_id: number | null
   product_description: string | null
+  category: string | null
   vb_supplier?: { company_name: string } | null
+}
+
+interface DepreciationAsset {
+  asset_id: number
+  description: string
+  purchase_date: string
+  purchase_cost: number
+  residual_value: number
+  useful_life_months: number
+  is_active: boolean
+  notes: string | null
 }
 
 interface RetailCount {
@@ -74,6 +86,18 @@ interface RetailCount {
   cl_stock_value: number | null
   cost_per_item: number | null
   markup_pct: number | null
+}
+
+interface FoodCount {
+  count_id: number
+  count_date: string
+  category_name: string | null
+  opening_stock: number
+  closing_stock: number
+  new_received: number
+  op_stock_value: number | null
+  cl_stock_value: number | null
+  cost_per_unit: number | null
 }
 
 interface Payslip {
@@ -354,13 +378,15 @@ function VarianceBadge({ variance }: { variance: number }) {
 export default function BusinessDashboard() {
   const supabase = createClient()
 
-  const [cashUpSheets, setCashUpSheets] = useState<CashUpSheet[]>([])
-  const [expenses,     setExpenses]     = useState<Expense[]>([])
-  const [retailCounts, setRetailCounts] = useState<RetailCount[]>([])
-  const [payslips,     setPayslips]     = useState<Payslip[]>([])
-  const [employees,    setEmployees]    = useState<Employee[]>([])
-  const [loading,      setLoading]      = useState(true)
-  const [lastRefresh,  setLastRefresh]  = useState(new Date())
+  const [cashUpSheets,  setCashUpSheets]  = useState<CashUpSheet[]>([])
+  const [expenses,      setExpenses]      = useState<Expense[]>([])
+  const [retailCounts,  setRetailCounts]  = useState<RetailCount[]>([])
+  const [foodCounts,    setFoodCounts]    = useState<FoodCount[]>([])
+  const [payslips,      setPayslips]      = useState<Payslip[]>([])
+  const [employees,     setEmployees]     = useState<Employee[]>([])
+  const [assets,        setAssets]        = useState<DepreciationAsset[]>([])
+  const [loading,       setLoading]       = useState(true)
+  const [lastRefresh,   setLastRefresh]   = useState(new Date())
 
   const now = new Date()
   const [filterMode,      setFilterMode]      = useState<FilterMode>('month')
@@ -379,18 +405,22 @@ export default function BusinessDashboard() {
 
   const fetchAll = useCallback(async () => {
     setLoading(true)
-    const [sheets, exps, counts, slips, emps] = await Promise.all([
+    const [sheets, exps, counts, foodCountsRes, slips, emps, assetRows] = await Promise.all([
       supabase.from('cash_up_sheets').select('*').order('sheet_date', { ascending: false }),
       supabase.from('vb_expense').select('*, vb_supplier(company_name)'),
       supabase.from('vb_retail_stock_count_enriched').select('*'),
+      supabase.from('vb_food_stock_count_enriched').select('count_id,count_date,category_name,opening_stock,closing_stock,new_received,op_stock_value,cl_stock_value,cost_per_unit'),
       supabase.from('vb_payslip').select('*, vb_employee(full_name)'),
       supabase.from('vb_employee').select('employee_id, full_name, id_number, job_position, is_active'),
+      supabase.from('vb_depreciation_asset').select('*').order('purchase_date'),
     ])
     setCashUpSheets((sheets.data as CashUpSheet[]) ?? [])
     setExpenses((exps.data as Expense[]) ?? [])
     setRetailCounts((counts.data as RetailCount[]) ?? [])
+    setFoodCounts((foodCountsRes.data as FoodCount[]) ?? [])
     setPayslips((slips.data as Payslip[]) ?? [])
     setEmployees((emps.data as Employee[]) ?? [])
+    setAssets((assetRows.data as DepreciationAsset[]) ?? [])
     setLoading(false)
     setLastRefresh(new Date())
   }, [])
@@ -408,6 +438,10 @@ export default function BusinessDashboard() {
   const filteredCounts = useMemo(() =>
     retailCounts.filter(c => inRange(c.count_date, range)),
     [retailCounts, range]
+  )
+  const filteredFoodCounts = useMemo(() =>
+    foodCounts.filter(c => inRange(c.count_date, range)),
+    [foodCounts, range]
   )
   const filteredPayslips = useMemo(() =>
     payslips.filter(p => {
@@ -638,6 +672,107 @@ export default function BusinessDashboard() {
       }
     }).sort((a, b) => b.totalCost - a.totalCost)
   }, [filteredPayslips, employees])
+
+  // ─── Income Statement (P&L) ──────────────────────────────────────────────
+  const incomeStatement = useMemo(() => {
+    // Helper: sum expenses by category for the filtered period
+    const expCat = (cat: string) =>
+      filteredExpenses
+        .filter(e => e.category === cat)
+        .reduce((s, e) => s + Number(e.amount_excl_vat), 0)
+
+    // Revenue: Z-print divided by 1.15 to exclude VAT
+    const sales = filteredSheets.reduce((s, r) => s + parseNum(r.till_total_z_print), 0) / 1.15
+
+    // COS from stock counts: Opening Stock Value + Purchases - Closing Stock Value
+    const cosRetail = Math.max(0,
+      filteredCounts.reduce((s, c) => s + (c.op_stock_value ?? 0), 0) +
+      filteredCounts.reduce((s, c) => s + (c.new_received ?? 0) * (c.cost_per_item ?? 0), 0) -
+      filteredCounts.reduce((s, c) => s + (c.cl_stock_value ?? 0), 0)
+    )
+    const cosFood = Math.max(0,
+      filteredFoodCounts.reduce((s, c) => s + (c.op_stock_value ?? 0), 0) +
+      filteredFoodCounts.reduce((s, c) => s + (c.new_received ?? 0) * (c.cost_per_unit ?? 0), 0) -
+      filteredFoodCounts.reduce((s, c) => s + (c.cl_stock_value ?? 0), 0)
+    )
+    const totalCos  = cosRetail + cosFood
+
+    // Courier / delivery
+    const courierFees = expCat('TRANSPORT')
+
+    const grossProfit = sales - totalCos - courierFees
+
+    // Wages — regular employees (monthly payslips, nett + PAYE + UIF)
+    const regularPayslips = filteredPayslips.filter(p => p.payslip_type === 'monthly' || p.pay_type === 'monthly')
+    const wages = regularPayslips.reduce((s, p) =>
+      s + Number(p.nett_pay ?? 0) + Number(p.paye ?? 0) + Number(p.uif_employee ?? 0) + Number(p.uif_employer ?? 0), 0)
+
+    // Casual wages — from payslips (hourly/daily/casual) + any expense lines tagged CASUAL WAGES
+    const casualPayslips = filteredPayslips.filter(p => p.payslip_type !== 'monthly' && p.pay_type !== 'monthly')
+    const casualWagesPayslip = casualPayslips.reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
+    const casualWagesExpense = expCat('CASUAL WAGES')
+    const casualWages = casualWagesPayslip + casualWagesExpense
+
+    const grossAfterWages = grossProfit - wages - casualWages
+
+    // UIF & PAYE from payslips
+    const uifPaye = filteredPayslips.reduce((s, p) =>
+      s + Number(p.paye ?? 0) + Number(p.uif_employee ?? 0) + Number(p.uif_employer ?? 0), 0)
+
+    // Depreciation: pro-rate assets for the period
+    const fromDate = new Date(range.from)
+    const toDate   = new Date(range.to)
+    // Number of months the period spans (at least 1)
+    const monthsInPeriod = Math.max(1,
+      (toDate.getFullYear() - fromDate.getFullYear()) * 12 +
+      (toDate.getMonth() - fromDate.getMonth()) + 1
+    )
+    const depreciationByAsset = assets
+      .filter(a => a.is_active && new Date(a.purchase_date) <= toDate)
+      .map(a => {
+        const monthlyDep = (Number(a.purchase_cost) - Number(a.residual_value)) / a.useful_life_months
+        // How many months has this asset been depreciating within our period?
+        const assetStart = new Date(a.purchase_date)
+        const periodStart = assetStart > fromDate ? assetStart : fromDate
+        const periodMonths = Math.max(0,
+          (toDate.getFullYear() - periodStart.getFullYear()) * 12 +
+          (toDate.getMonth() - periodStart.getMonth()) + 1
+        )
+        const clampedMonths = Math.min(periodMonths, monthsInPeriod)
+        return {
+          description: a.description,
+          monthly: Math.round(monthlyDep * 100) / 100,
+          total: Math.round(monthlyDep * clampedMonths * 100) / 100,
+        }
+      })
+    const totalDepreciation = depreciationByAsset.reduce((s, a) => s + a.total, 0)
+
+    // Expense categories (excluding ones handled separately above)
+    const OVERHEAD_CATS = [
+      'GARDEN', 'ELECTRICITY', 'GAS', 'RENT', 'RATES & WATER',
+      'PRINTING & STATIONERY', 'ADVERTISING & PROMOTIONS', 'R&M',
+      'FIXTURES & FITTING', 'TRAINING', 'INSURANCE',
+      'TELEPHONE & WEB', 'CONSUMABLES', 'GENERAL',
+      'DONATIONS', 'SUBSCRIPTIONS', 'HEALTH & SAFETY',
+      'BANK ACC - B/C', 'CREDIT CARD FEES', 'ACCOUNTING FEE',
+      'SARS PROV TAX (REFUND FROM SARS)', 'STOCK LOSS',
+    ] as const
+
+    const overheads = OVERHEAD_CATS.map(cat => ({ label: cat, value: expCat(cat) }))
+
+    const totalOverheads = overheads.reduce((s, r) => s + r.value, 0)
+    const totalExpenses  = totalOverheads + uifPaye + totalDepreciation
+    const profitLoss     = grossAfterWages - totalExpenses
+
+    return {
+      sales, cosRetail, cosFood, totalCos, courierFees, grossProfit,
+      wages, casualWages, grossAfterWages,
+      uifPaye, depreciationByAsset, totalDepreciation,
+      overheads, totalOverheads, totalExpenses,
+      profitLoss,
+      monthsInPeriod,
+    }
+  }, [filteredSheets, filteredExpenses, filteredCounts, filteredFoodCounts, filteredPayslips, assets, range])
 
   const vatData = useMemo(() => [
     { name: 'Output VAT (Sales)',    value: Math.round(core.outputVat), color: BRAND.caramel },
@@ -874,6 +1009,7 @@ export default function BusinessDashboard() {
       <Tabs defaultValue="overview">
         <TabsList className="h-9 rounded-xl bg-muted p-1 flex-wrap">
           <TabsTrigger value="overview"  className="rounded-lg text-xs px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">Overview</TabsTrigger>
+          <TabsTrigger value="pl"        className="rounded-lg text-xs px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">Income Statement</TabsTrigger>
           <TabsTrigger value="revenue"   className="rounded-lg text-xs px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">Revenue & Z</TabsTrigger>
           <TabsTrigger value="vat"       className="rounded-lg text-xs px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">VAT</TabsTrigger>
           <TabsTrigger value="expenses"  className="rounded-lg text-xs px-3 data-[state=active]:bg-card data-[state=active]:shadow-sm">Expenses</TabsTrigger>
@@ -1577,7 +1713,434 @@ export default function BusinessDashboard() {
             </div>
           </div>
         </TabsContent>
+
+        {/* ══ INCOME STATEMENT ══════════════════════════════════════════════ */}
+        <TabsContent value="pl" className="mt-5 space-y-5">
+          <PLTab
+            is={incomeStatement as ISData}
+            assets={assets}
+            range={range}
+            supabase={supabase}
+            onAssetsChanged={fetchAll}
+          />
+        </TabsContent>
+
       </Tabs>
+    </div>
+  )
+}
+
+// ─── P&L / Income Statement Tab ───────────────────────────────────────────────
+interface ISData {
+  sales: number; cosRetail: number; cosFood: number; totalCos: number
+  courierFees: number; grossProfit: number; wages: number; casualWages: number
+  grossAfterWages: number; uifPaye: number
+  depreciationByAsset: { description: string; monthly: number; total: number }[]
+  totalDepreciation: number
+  overheads: { label: string; value: number }[]
+  totalOverheads: number; totalExpenses: number; profitLoss: number
+  monthsInPeriod: number
+}
+
+function PLTab({
+  is, assets, range, supabase, onAssetsChanged,
+}: {
+  is: ISData
+  assets: DepreciationAsset[]
+  range: { from: string; to: string }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any
+  onAssetsChanged: () => void
+}) {
+  const ZAR_pl = (n: number) =>
+    new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(n)
+
+  // ── Asset form state ──────────────────────────────────────────────────────
+  const EMPTY_ASSET = {
+    description: '', purchase_date: '', purchase_cost: 0,
+    residual_value: 0, useful_life_months: 60, is_active: true, notes: '',
+  }
+  const [showAssetForm, setShowAssetForm] = useState(false)
+  const [editAsset,     setEditAsset]     = useState<DepreciationAsset | null>(null)
+  const [assetForm,     setAssetForm]     = useState({ ...EMPTY_ASSET })
+  const [assetSaving,   setAssetSaving]   = useState(false)
+  const [deleteTarget,  setDeleteTarget]  = useState<DepreciationAsset | null>(null)
+
+  function openAdd()  { setAssetForm({ ...EMPTY_ASSET }); setEditAsset(null); setShowAssetForm(true) }
+  function openEdit(a: DepreciationAsset) {
+    setAssetForm({
+      description: a.description, purchase_date: a.purchase_date,
+      purchase_cost: a.purchase_cost, residual_value: a.residual_value,
+      useful_life_months: a.useful_life_months, is_active: a.is_active,
+      notes: a.notes ?? '',
+    })
+    setEditAsset(a); setShowAssetForm(true)
+  }
+
+  async function saveAsset() {
+    if (!assetForm.description || !assetForm.purchase_date || !assetForm.purchase_cost) return
+    setAssetSaving(true)
+    const payload = {
+      description: assetForm.description.trim(),
+      purchase_date: assetForm.purchase_date,
+      purchase_cost: assetForm.purchase_cost,
+      residual_value: assetForm.residual_value,
+      useful_life_months: assetForm.useful_life_months,
+      is_active: assetForm.is_active,
+      notes: assetForm.notes.trim() || null,
+      updated_at: new Date().toISOString(),
+    }
+    if (editAsset) {
+      await supabase.from('vb_depreciation_asset').update(payload).eq('asset_id', editAsset.asset_id)
+    } else {
+      await supabase.from('vb_depreciation_asset').insert([payload])
+    }
+    setAssetSaving(false); setShowAssetForm(false); onAssetsChanged()
+  }
+
+  async function deleteAsset(id: number) {
+    await supabase.from('vb_depreciation_asset').delete().eq('asset_id', id)
+    setDeleteTarget(null); onAssetsChanged()
+  }
+
+  // ── P&L row renderer ──────────────────────────────────────────────────────
+  type PLRow =
+    | { type: 'header'; label: string }
+    | { type: 'row'; label: string; value: number; indent?: boolean; bold?: boolean; sub?: boolean }
+    | { type: 'subtotal'; label: string; value: number; positive?: boolean }
+    | { type: 'total'; label: string; value: number; positive?: boolean }
+    | { type: 'spacer' }
+
+  const rows: PLRow[] = [
+    { type: 'header', label: 'INCOME' },
+    { type: 'row',    label: 'Sales (Z-Print excl. VAT)', value: is.sales, bold: true },
+    { type: 'spacer' },
+    { type: 'header', label: 'COST OF SALES' },
+    { type: 'row',    label: 'COS – Food (Op + Purchases − Cl)', value: is.cosFood, indent: true },
+    { type: 'row',    label: 'COS – Retail (Op + Purchases − Cl)', value: is.cosRetail, indent: true },
+    ...(is.courierFees > 0 ? [{ type: 'row' as const, label: 'Transport / Courier', value: is.courierFees, indent: true }] : []),
+    { type: 'subtotal', label: 'TOTAL COS', value: is.totalCos },
+    { type: 'spacer' },
+    { type: 'total', label: 'GROSS PROFIT', value: is.grossProfit, positive: is.grossProfit >= 0 },
+    { type: 'spacer' },
+    { type: 'header', label: 'WAGES' },
+    { type: 'row',    label: 'Wages (regular employees)', value: is.wages, indent: true },
+    { type: 'row',    label: 'Casual wages', value: is.casualWages, indent: true },
+    { type: 'subtotal', label: 'GROSS (after wages)', value: is.grossAfterWages, positive: is.grossAfterWages >= 0 },
+    { type: 'spacer' },
+    { type: 'header', label: 'OVERHEADS' },
+    ...is.overheads
+      .filter(o => o.value !== 0)
+      .map(o => ({ type: 'row' as const, label: o.label, value: o.value, indent: true })),
+    { type: 'spacer' },
+    { type: 'header', label: 'STATUTORY' },
+    { type: 'row',    label: 'UIF & PAYE', value: is.uifPaye, indent: true },
+    { type: 'spacer' },
+    ...(is.depreciationByAsset.length > 0 ? [
+      { type: 'header' as const, label: 'DEPRECIATION' },
+      ...is.depreciationByAsset.map(a => ({
+        type: 'row' as const,
+        label: `${a.description} (R${a.monthly.toFixed(0)}/mo × ${is.monthsInPeriod})`,
+        value: a.total, indent: true, sub: true,
+      })),
+      { type: 'spacer' as const },
+    ] : []),
+    { type: 'subtotal', label: 'TOTAL EXPENSES', value: is.totalExpenses },
+    { type: 'spacer' },
+    { type: 'total', label: 'NET PROFIT / (LOSS)', value: is.profitLoss, positive: is.profitLoss >= 0 },
+  ]
+
+  return (
+    <div className="space-y-6">
+      {/* Period note */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <p className="text-xs text-muted-foreground font-mono bg-muted px-3 py-1.5 rounded-lg">
+          Period: {range.from} → {range.to}
+          {is.monthsInPeriod > 1 ? ` (${is.monthsInPeriod} months)` : ' (1 month)'}
+        </p>
+        <p className="text-[10px] text-muted-foreground">
+          COS &amp; overheads sourced from expenses tagged with categories · Wages from payslips
+        </p>
+      </div>
+
+      {/* P&L statement */}
+      <div className="rounded-2xl border bg-card overflow-hidden">
+        <div className="px-5 py-4 border-b bg-muted/30">
+          <h3 className="font-semibold text-sm">Income Statement</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">Village Bakery · {range.from.slice(0, 7)} to {range.to.slice(0, 7)}</p>
+        </div>
+        <table className="w-full text-sm">
+          <tbody>
+            {rows.map((row, i) => {
+              if (row.type === 'spacer') return <tr key={i}><td colSpan={2} className="py-1" /></tr>
+              if (row.type === 'header') return (
+                <tr key={i} className="bg-muted/20">
+                  <td colSpan={2} className="px-5 py-2 text-[10px] uppercase tracking-widest font-bold text-muted-foreground">
+                    {row.label}
+                  </td>
+                </tr>
+              )
+              if (row.type === 'subtotal') return (
+                <tr key={i} className="border-t border-border bg-muted/10">
+                  <td className="px-5 py-2.5 font-semibold">{row.label}</td>
+                  <td className={`px-5 py-2.5 text-right tabular-nums font-semibold ${
+                    row.positive === undefined ? '' : row.positive ? 'text-emerald-600' : 'text-red-500'
+                  }`}>
+                    {ZAR_pl(row.value)}
+                  </td>
+                </tr>
+              )
+              if (row.type === 'total') return (
+                <tr key={i} className="border-t-2 border-border">
+                  <td className="px-5 py-3 font-bold text-base">{row.label}</td>
+                  <td className={`px-5 py-3 text-right tabular-nums font-bold text-base ${
+                    row.positive === undefined ? '' : row.positive ? 'text-emerald-600' : 'text-red-500'
+                  }`}>
+                    {ZAR_pl(row.value)}
+                  </td>
+                </tr>
+              )
+              // regular row
+              return (
+                <tr key={i} className="hover:bg-muted/10 border-t border-border/40">
+                  <td className={`px-5 py-2 ${row.indent ? 'pl-10 text-muted-foreground' : ''} ${row.bold ? 'font-semibold' : ''} ${row.sub ? 'text-xs' : ''}`}>
+                    {row.label}
+                  </td>
+                  <td className={`px-5 py-2 text-right tabular-nums ${row.bold ? 'font-semibold' : 'text-muted-foreground'} ${row.sub ? 'text-xs' : ''}`}>
+                    {ZAR_pl(row.value)}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Quick margin summary */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        {[
+          {
+            label: 'Gross Margin',
+            value: is.sales > 0 ? `${(is.grossProfit / is.sales * 100).toFixed(1)}%` : '—',
+            sub: `GP ${ZAR_pl(is.grossProfit)}`,
+            color: is.grossProfit >= 0 ? BRAND.sage : BRAND.terracotta,
+          },
+          {
+            label: 'Wage Ratio',
+            value: is.sales > 0 ? `${((is.wages + is.casualWages) / is.sales * 100).toFixed(1)}%` : '—',
+            sub: `Wages ${ZAR_pl(is.wages + is.casualWages)}`,
+            color: BRAND.caramel,
+          },
+          {
+            label: 'Net Profit Margin',
+            value: is.sales > 0 ? `${(is.profitLoss / is.sales * 100).toFixed(1)}%` : '—',
+            sub: `Net ${ZAR_pl(is.profitLoss)}`,
+            color: is.profitLoss >= 0 ? BRAND.sage : BRAND.terracotta,
+          },
+        ].map(k => (
+          <div key={k.label} className="rounded-2xl border bg-card p-4 relative overflow-hidden">
+            <div className="absolute top-0 left-0 right-0 h-0.5 rounded-t-2xl" style={{ background: k.color }} />
+            <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-medium">{k.label}</p>
+            <p className="font-bold text-xl tabular-nums mt-1" style={{ color: k.color }}>{k.value}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{k.sub}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Depreciation asset manager */}
+      <div className="rounded-2xl border bg-card overflow-hidden">
+        <div className="px-5 py-4 border-b bg-muted/30 flex items-center justify-between gap-3">
+          <div>
+            <h3 className="font-semibold text-sm">Depreciating Assets</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Assets are depreciated straight-line over their useful life. Monthly charge auto-calculates.
+            </p>
+          </div>
+          <button
+            onClick={openAdd}
+            className="flex items-center gap-1.5 text-xs font-semibold bg-foreground text-background rounded-lg px-3 py-1.5 hover:opacity-90 transition-opacity"
+          >
+            <span className="text-base leading-none">+</span> Add asset
+          </button>
+        </div>
+
+        {assets.length === 0 ? (
+          <div className="text-center py-10 text-muted-foreground text-sm">
+            No assets yet. Add one above to start tracking depreciation.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b bg-muted/20 text-[10px] uppercase tracking-widest text-muted-foreground">
+                  <th className="px-4 py-2 text-left">Description</th>
+                  <th className="px-4 py-2 text-left">Purchased</th>
+                  <th className="px-4 py-2 text-right">Cost</th>
+                  <th className="px-4 py-2 text-right">Residual</th>
+                  <th className="px-4 py-2 text-right">Life</th>
+                  <th className="px-4 py-2 text-right">Monthly Dep.</th>
+                  <th className="px-4 py-2 text-center">Active</th>
+                  <th className="px-4 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                {assets.map(a => {
+                  const monthly = (Number(a.purchase_cost) - Number(a.residual_value)) / a.useful_life_months
+                  return (
+                    <tr key={a.asset_id} className={`border-b hover:bg-muted/10 ${!a.is_active ? 'opacity-40' : ''}`}>
+                      <td className="px-4 py-2.5 font-medium">{a.description}</td>
+                      <td className="px-4 py-2.5 text-muted-foreground tabular-nums">{a.purchase_date}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">{ZAR_pl(Number(a.purchase_cost))}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{ZAR_pl(Number(a.residual_value))}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">{a.useful_life_months}mo</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums font-semibold">{ZAR_pl(monthly)}/mo</td>
+                      <td className="px-4 py-2.5 text-center">
+                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${a.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-muted text-muted-foreground'}`}>
+                          {a.is_active ? 'Yes' : 'No'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center gap-1 justify-end">
+                          <button onClick={() => openEdit(a)} className="text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded hover:bg-muted transition-colors">Edit</button>
+                          <button onClick={() => setDeleteTarget(a)} className="text-xs text-red-500 hover:text-red-700 px-2 py-1 rounded hover:bg-red-50 transition-colors">Del</button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+              <tfoot>
+                <tr className="bg-muted/20 border-t-2">
+                  <td colSpan={5} className="px-4 py-2.5 text-xs font-semibold text-muted-foreground">Total monthly depreciation</td>
+                  <td className="px-4 py-2.5 text-right font-bold tabular-nums">
+                    {ZAR_pl(assets.filter(a => a.is_active).reduce((s, a) => s + (Number(a.purchase_cost) - Number(a.residual_value)) / a.useful_life_months, 0))}
+                    /mo
+                  </td>
+                  <td colSpan={2} />
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Asset add/edit modal */}
+      {showAssetForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-card rounded-2xl border shadow-xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-sm">{editAsset ? 'Edit asset' : 'Add depreciating asset'}</h3>
+              <button onClick={() => setShowAssetForm(false)} className="text-muted-foreground hover:text-foreground">
+                <span className="text-lg leading-none">×</span>
+              </button>
+            </div>
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Description *</label>
+                <input
+                  className="w-full border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                  placeholder="e.g. Solar panel system"
+                  value={assetForm.description}
+                  onChange={e => setAssetForm(f => ({ ...f, description: e.target.value }))}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Purchase date *</label>
+                  <input type="date"
+                    className="w-full border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                    value={assetForm.purchase_date}
+                    onChange={e => setAssetForm(f => ({ ...f, purchase_date: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Useful life (months) *</label>
+                  <input type="number" min={1}
+                    className="w-full border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                    value={assetForm.useful_life_months}
+                    onChange={e => setAssetForm(f => ({ ...f, useful_life_months: parseInt(e.target.value) || 60 }))}
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Purchase cost (R) *</label>
+                  <input type="number" min={0} step={0.01}
+                    className="w-full border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                    value={assetForm.purchase_cost || ''}
+                    onChange={e => setAssetForm(f => ({ ...f, purchase_cost: parseFloat(e.target.value) || 0 }))}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Residual value (R)</label>
+                  <input type="number" min={0} step={0.01}
+                    className="w-full border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                    value={assetForm.residual_value || ''}
+                    onChange={e => setAssetForm(f => ({ ...f, residual_value: parseFloat(e.target.value) || 0 }))}
+                  />
+                </div>
+              </div>
+              {assetForm.purchase_cost > 0 && assetForm.useful_life_months > 0 && (
+                <div className="rounded-xl bg-muted/40 border px-3 py-2 text-xs text-muted-foreground">
+                  Monthly depreciation:{' '}
+                  <span className="font-semibold text-foreground">
+                    {ZAR_pl((assetForm.purchase_cost - assetForm.residual_value) / assetForm.useful_life_months)}/month
+                  </span>
+                  {' '} over {assetForm.useful_life_months} months
+                </div>
+              )}
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Notes (optional)</label>
+                <textarea
+                  className="w-full border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+                  rows={2}
+                  value={assetForm.notes}
+                  onChange={e => setAssetForm(f => ({ ...f, notes: e.target.value }))}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <input type="checkbox" id="asset-active" checked={assetForm.is_active}
+                  onChange={e => setAssetForm(f => ({ ...f, is_active: e.target.checked }))}
+                  className="rounded"
+                />
+                <label htmlFor="asset-active" className="text-xs font-medium cursor-pointer">Active (include in depreciation)</label>
+              </div>
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button onClick={() => setShowAssetForm(false)}
+                className="flex-1 border rounded-lg py-2 text-sm font-medium hover:bg-muted transition-colors">
+                Cancel
+              </button>
+              <button
+                onClick={saveAsset}
+                disabled={assetSaving || !assetForm.description || !assetForm.purchase_date || !assetForm.purchase_cost}
+                className="flex-1 bg-foreground text-background rounded-lg py-2 text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+              >
+                {assetSaving ? 'Saving…' : editAsset ? 'Save changes' : 'Add asset'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirm */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-card rounded-2xl border shadow-xl w-full max-w-sm p-6 space-y-4">
+            <h3 className="font-semibold text-sm">Delete asset?</h3>
+            <p className="text-sm text-muted-foreground">
+              <strong>{deleteTarget.description}</strong> will be permanently removed. This cannot be undone.
+            </p>
+            <div className="flex gap-2">
+              <button onClick={() => setDeleteTarget(null)} className="flex-1 border rounded-lg py-2 text-sm font-medium hover:bg-muted transition-colors">Cancel</button>
+              <button onClick={() => deleteAsset(deleteTarget.asset_id)}
+                className="flex-1 bg-red-600 text-white rounded-lg py-2 text-sm font-medium hover:bg-red-700 transition-colors">
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

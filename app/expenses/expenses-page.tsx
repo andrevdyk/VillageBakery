@@ -79,6 +79,7 @@ interface Expense {
   vat_amount: number
   amount_incl_vat: number
   date_paid: string | null
+  category: string | null
   vb_supplier: { company_name: string }
 }
 
@@ -90,6 +91,7 @@ interface ExpenseRow {
   amount_excl_vat: number
   vat_rated: boolean
   date_paid?: string
+  category?: string | null
 }
 
 interface AnalyticsExpense {
@@ -120,6 +122,35 @@ const MONTHS = ['January','February','March','April','May','June',
   'July','August','September','October','November','December']
 const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
 const PAGE_SIZE = 15
+
+const EXPENSE_CATEGORIES = [
+  'COS RETAIL',
+  'COS FOOD',
+  'CASUAL WAGES',
+  'GARDEN',
+  'ELECTRICITY',
+  'GAS',
+  'RENT',
+  'RATES & WATER',
+  'PRINTING & STATIONERY',
+  'ADVERTISING & PROMOTIONS',
+  'R&M',
+  'FIXTURES & FITTING',
+  'TRANSPORT',
+  'TRAINING',
+  'INSURANCE',
+  'TELEPHONE & WEB',
+  'CONSUMABLES',
+  'GENERAL',
+  'DONATIONS',
+  'SUBSCRIPTIONS',
+  'HEALTH & SAFETY',
+  'BANK ACC - B/C',
+  'CREDIT CARD FEES',
+  'ACCOUNTING FEE',
+  'SARS PROV TAX (REFUND FROM SARS)',
+  'STOCK LOSS',
+] as const
 
 const ZAR = (n: number) =>
   new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(n)
@@ -542,92 +573,155 @@ function UploadModal({ open, onClose, suppliers, onImport }: {
 }
 
 // ─── Add / Edit Expense Modal ─────────────────────────────────────────────────
+interface LineItem {
+  description: string
+  category: string
+  amount_excl_vat: number
+  vat_rated: boolean
+}
+
+const EMPTY_LINE_ITEM: LineItem = { description: '', category: '', amount_excl_vat: 0, vat_rated: false }
+
 function AddExpenseModal({ open, onClose, suppliers, onSave }: {
   open: boolean; onClose: () => void; suppliers: Supplier[]
-  onSave: (row: ExpenseRow) => Promise<void>
+  onSave: (rows: ExpenseRow[]) => Promise<void>
 }) {
-  const [mode, setMode]     = useState<'expense' | 'bank'>('expense')
-  const [form, setForm]     = useState<Partial<ExpenseRow>>({ vat_rated: false, amount_excl_vat: 0 })
+  const [type, setType]         = useState<'expense' | 'bank'>('expense')
+  const [invoiceMode, setInvoiceMode] = useState<'single' | 'items'>('single')
+
+  // Shared header fields
+  const [supplierId, setSupplierId]   = useState<number | null>(null)
+  const [invoiceNumber, setInvoiceNumber] = useState('')
+  const [invoiceDate, setInvoiceDate] = useState('')
+  const [datePaid, setDatePaid]       = useState('')
+
+  // Single mode fields
+  const [description, setDescription] = useState('')
+  const [category, setCategory]       = useState('')
+  const [amountExcl, setAmountExcl]   = useState(0)
+  const [vatRated, setVatRated]       = useState(false)
+
+  // Line items mode
+  const [lineItems, setLineItems] = useState<LineItem[]>([{ ...EMPTY_LINE_ITEM }])
+
+  // Bank fees mode
   const [bankFees, setBankFees] = useState({ amount: 0, description: 'Bank charges', date: new Date().toISOString().split('T')[0], date_paid: '' })
+
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState('')
 
   useEffect(() => {
     if (open) {
-      setMode('expense')
-      setForm({ vat_rated: false, amount_excl_vat: 0 })
+      setType('expense'); setInvoiceMode('single')
+      setSupplierId(null); setInvoiceNumber(''); setInvoiceDate(''); setDatePaid('')
+      setDescription(''); setCategory(''); setAmountExcl(0); setVatRated(false)
+      setLineItems([{ ...EMPTY_LINE_ITEM }])
       setBankFees({ amount: 0, description: 'Bank charges', date: new Date().toISOString().split('T')[0], date_paid: '' })
       setError('')
     }
   }, [open])
 
-  const set = (k: keyof ExpenseRow, v: unknown) => setForm(f => ({ ...f, [k]: v }))
-  const { vat_amount, amount_incl_vat } = calcVat(form.amount_excl_vat ?? 0, form.vat_rated ?? false)
+  const singleVat = calcVat(amountExcl, vatRated)
+
+  const lineTotal = lineItems.reduce((s, li) => {
+    const { amount_incl_vat } = calcVat(li.amount_excl_vat, li.vat_rated)
+    return s + amount_incl_vat
+  }, 0)
+  const lineExcl = lineItems.reduce((s, li) => s + li.amount_excl_vat, 0)
+
+  function updateLine(idx: number, patch: Partial<LineItem>) {
+    setLineItems(prev => prev.map((li, i) => i === idx ? { ...li, ...patch } : li))
+  }
+  function addLine()    { setLineItems(prev => [...prev, { ...EMPTY_LINE_ITEM }]) }
+  function removeLine(idx: number) { setLineItems(prev => prev.filter((_, i) => i !== idx)) }
 
   async function handleSave() {
-    if (mode === 'bank') {
+    if (type === 'bank') {
       if (!bankFees.amount || bankFees.amount <= 0) return setError('Please enter a bank fee amount')
       if (!bankFees.date) return setError('Please enter a date')
       setError(''); setSaving(true)
-      await onSave({
+      await onSave([{
         invoice_date: bankFees.date,
         product_description: bankFees.description || 'Bank charges',
         amount_excl_vat: bankFees.amount,
         vat_rated: false,
         date_paid: bankFees.date_paid || undefined,
-      } as unknown as ExpenseRow)
+        category: 'BANK ACC - B/C',
+      } as ExpenseRow])
       setSaving(false); onClose()
       return
     }
-    if (!form.supplier_id) return setError('Please select a supplier')
-    if (!form.invoice_date) return setError('Please enter an invoice date')
-    if (!form.amount_excl_vat || form.amount_excl_vat <= 0) return setError('Please enter a valid amount')
-    setError(''); setSaving(true)
-    await onSave(form as ExpenseRow)
-    setSaving(false); setForm({ vat_rated: false, amount_excl_vat: 0 }); onClose()
+
+    if (!supplierId) return setError('Please select a supplier')
+    if (!invoiceDate) return setError('Please enter an invoice date')
+
+    if (invoiceMode === 'single') {
+      if (!amountExcl || amountExcl <= 0) return setError('Please enter a valid amount')
+      setError(''); setSaving(true)
+      await onSave([{
+        supplier_id: supplierId,
+        invoice_number: invoiceNumber || undefined,
+        invoice_date: invoiceDate,
+        product_description: description || undefined,
+        amount_excl_vat: amountExcl,
+        vat_rated: vatRated,
+        date_paid: datePaid || undefined,
+        category: category || null,
+      }])
+    } else {
+      const validLines = lineItems.filter(li => li.amount_excl_vat > 0)
+      if (validLines.length === 0) return setError('Add at least one line item with an amount')
+      setError(''); setSaving(true)
+      const rows: ExpenseRow[] = validLines.map(li => ({
+        supplier_id: supplierId!,
+        invoice_number: invoiceNumber || undefined,
+        invoice_date: invoiceDate,
+        product_description: li.description || undefined,
+        amount_excl_vat: li.amount_excl_vat,
+        vat_rated: li.vat_rated,
+        date_paid: datePaid || undefined,
+        category: li.category || null,
+      }))
+      await onSave(rows)
+    }
+    setSaving(false); onClose()
   }
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="w-full max-w-md h-[100dvh] sm:h-auto sm:max-h-[90vh] overflow-y-auto p-4 sm:p-6 rounded-none sm:rounded-xl">
+      <DialogContent className="w-full max-w-lg h-[100dvh] sm:h-auto sm:max-h-[92vh] overflow-y-auto p-4 sm:p-6 rounded-none sm:rounded-xl">
         <DialogHeader><DialogTitle>Add expense</DialogTitle></DialogHeader>
         <div className="space-y-4">
+
+          {/* Type toggle */}
           <div className="flex rounded-xl bg-muted p-1 gap-1">
             <button
-              onClick={() => setMode('expense')}
-              className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-medium transition-all ${mode === 'expense' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+              onClick={() => setType('expense')}
+              className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-medium transition-all ${type === 'expense' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
             >
-              <FileText className="w-3.5 h-3.5" /> Supplier expense
+              <FileText className="w-3.5 h-3.5" /> Supplier invoice
             </button>
             <button
-              onClick={() => setMode('bank')}
-              className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-medium transition-all ${mode === 'bank' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+              onClick={() => setType('bank')}
+              className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-medium transition-all ${type === 'bank' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
             >
               <Banknote className="w-3.5 h-3.5" /> Bank fees
             </button>
           </div>
 
-          {mode === 'bank' ? (
+          {type === 'bank' ? (
             <div className="space-y-4">
               <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
-                Bank fees are recorded as zero-rated (0% VAT) expenses with no supplier.
+                Bank fees are recorded as zero-rated (0% VAT) under <strong>BANK ACC - B/C</strong>.
               </div>
               <div className="space-y-1.5">
                 <Label>Description</Label>
-                <Input
-                  value={bankFees.description}
-                  placeholder="e.g. Bank charges, Monthly fee"
-                  onChange={e => setBankFees(b => ({ ...b, description: e.target.value }))}
-                />
+                <Input value={bankFees.description} placeholder="e.g. Bank charges, Monthly fee" onChange={e => setBankFees(b => ({ ...b, description: e.target.value }))} />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label>Amount (R)</Label>
-                  <Input
-                    type="number" inputMode="decimal" min={0} step={0.01} placeholder="0.00"
-                    value={bankFees.amount || ''}
-                    onChange={e => setBankFees(b => ({ ...b, amount: parseFloat(e.target.value) || 0 }))}
-                  />
+                  <Input type="number" inputMode="decimal" min={0} step={0.01} placeholder="0.00" value={bankFees.amount || ''} onChange={e => setBankFees(b => ({ ...b, amount: parseFloat(e.target.value) || 0 }))} />
                 </div>
                 <div className="space-y-1.5">
                   <Label>Date</Label>
@@ -645,35 +739,128 @@ function AddExpenseModal({ open, onClose, suppliers, onSave }: {
             </div>
           ) : (
             <div className="space-y-4">
+              {/* Invoice header */}
               <div className="space-y-1.5">
-                <Label>Supplier</Label>
-                <Select onValueChange={v => set('supplier_id', Number(v))}>
+                <Label>Supplier <span className="text-destructive">*</span></Label>
+                <Select value={supplierId ? String(supplierId) : ''} onValueChange={v => setSupplierId(Number(v))}>
                   <SelectTrigger><SelectValue placeholder="Select supplier…" /></SelectTrigger>
                   <SelectContent>{suppliers.map(s => <SelectItem key={s.supplier_id} value={String(s.supplier_id)}>{s.company_name}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5"><Label>Invoice number</Label><Input placeholder="e.g. INV-001" onChange={e => set('invoice_number', e.target.value)} /></div>
-                <div className="space-y-1.5"><Label>Invoice date</Label><Input type="date" onChange={e => set('invoice_date', e.target.value)} /></div>
-              </div>
-              <div className="space-y-1.5"><Label>Product / description</Label><Input placeholder="e.g. Bread flour, 25kg bags" onChange={e => set('product_description', e.target.value)} /></div>
-              <div className="space-y-1.5">
-                <Label>Amount (excl. VAT)</Label>
-                <Input type="number" inputMode="decimal" min={0} step={0.01} placeholder="0.00" onChange={e => set('amount_excl_vat', parseFloat(e.target.value) || 0)} />
-              </div>
-              <div className="flex items-center gap-2">
-                <Checkbox id="vat-rated" checked={form.vat_rated} onCheckedChange={v => set('vat_rated', v === true)} />
-                <Label htmlFor="vat-rated" className="cursor-pointer">VAT rated (15%)</Label>
+                <div className="space-y-1.5">
+                  <Label>Invoice number</Label>
+                  <Input placeholder="e.g. INV-001" value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Invoice date <span className="text-destructive">*</span></Label>
+                  <Input type="date" value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} />
+                </div>
               </div>
               <div className="space-y-1.5">
                 <Label>Date paid <span className="text-muted-foreground text-xs">(leave blank if unpaid)</span></Label>
-                <Input type="date" onChange={e => set('date_paid', e.target.value || undefined)} />
+                <Input type="date" value={datePaid} onChange={e => setDatePaid(e.target.value)} />
               </div>
-              <div className="rounded-xl bg-muted/40 border p-3 space-y-1 text-sm">
-                <div className="flex justify-between text-muted-foreground"><span>Excl. VAT</span><span>{ZAR(form.amount_excl_vat ?? 0)}</span></div>
-                <div className="flex justify-between text-muted-foreground"><span>VAT ({form.vat_rated ? '15%' : '0%'})</span><span>{ZAR(vat_amount)}</span></div>
-                <div className="flex justify-between font-medium border-t pt-1 mt-1"><span>Total incl. VAT</span><span>{ZAR(amount_incl_vat)}</span></div>
+
+              {/* Invoice mode toggle */}
+              <div>
+                <Label className="text-xs text-muted-foreground uppercase tracking-wide mb-2 block">Invoice allocation</Label>
+                <div className="flex rounded-xl bg-muted p-1 gap-1">
+                  <button
+                    onClick={() => setInvoiceMode('single')}
+                    className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-medium transition-all ${invoiceMode === 'single' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                  >
+                    <ReceiptText className="w-3.5 h-3.5" /> Whole invoice
+                  </button>
+                  <button
+                    onClick={() => setInvoiceMode('items')}
+                    className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-medium transition-all ${invoiceMode === 'items' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+                  >
+                    <Package className="w-3.5 h-3.5" /> Line items
+                  </button>
+                </div>
               </div>
+
+              {invoiceMode === 'single' ? (
+                <div className="space-y-4">
+                  <div className="space-y-1.5">
+                    <Label>Category</Label>
+                    <Select value={category} onValueChange={setCategory}>
+                      <SelectTrigger><SelectValue placeholder="Select category…" /></SelectTrigger>
+                      <SelectContent>
+                        {EXPENSE_CATEGORIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Description</Label>
+                    <Input placeholder="e.g. Bread flour, 25kg bags" value={description} onChange={e => setDescription(e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Amount (excl. VAT) <span className="text-destructive">*</span></Label>
+                    <Input type="number" inputMode="decimal" min={0} step={0.01} placeholder="0.00" value={amountExcl || ''} onChange={e => setAmountExcl(parseFloat(e.target.value) || 0)} />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Checkbox id="vat-rated" checked={vatRated} onCheckedChange={v => setVatRated(v === true)} />
+                    <Label htmlFor="vat-rated" className="cursor-pointer">VAT rated (15%)</Label>
+                  </div>
+                  <div className="rounded-xl bg-muted/40 border p-3 space-y-1 text-sm">
+                    <div className="flex justify-between text-muted-foreground"><span>Excl. VAT</span><span>{ZAR(amountExcl)}</span></div>
+                    <div className="flex justify-between text-muted-foreground"><span>VAT ({vatRated ? '15%' : '0%'})</span><span>{ZAR(singleVat.vat_amount)}</span></div>
+                    <div className="flex justify-between font-medium border-t pt-1 mt-1"><span>Total incl. VAT</span><span>{ZAR(singleVat.amount_incl_vat)}</span></div>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-xs text-muted-foreground">Each line is captured as a separate expense entry linked to the same invoice.</p>
+                  {lineItems.map((li, idx) => (
+                    <div key={idx} className="rounded-xl border p-3 space-y-3 relative">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-medium text-muted-foreground">Line {idx + 1}</span>
+                        {lineItems.length > 1 && (
+                          <button onClick={() => removeLine(idx)} className="text-muted-foreground hover:text-destructive transition-colors">
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">Category</Label>
+                        <Select value={li.category} onValueChange={v => updateLine(idx, { category: v })}>
+                          <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select category…" /></SelectTrigger>
+                          <SelectContent>
+                            {EXPENSE_CATEGORIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">Description</Label>
+                        <Input className="h-8 text-xs" placeholder="e.g. Flour 25kg, Milk 6L" value={li.description} onChange={e => updateLine(idx, { description: e.target.value })} />
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="space-y-1.5 flex-1">
+                          <Label className="text-xs">Amount excl. VAT (R)</Label>
+                          <Input className="h-8 text-xs" type="number" inputMode="decimal" min={0} step={0.01} placeholder="0.00" value={li.amount_excl_vat || ''} onChange={e => updateLine(idx, { amount_excl_vat: parseFloat(e.target.value) || 0 })} />
+                        </div>
+                        <div className="flex items-center gap-1.5 pt-5">
+                          <Checkbox id={`li-vat-${idx}`} checked={li.vat_rated} onCheckedChange={v => updateLine(idx, { vat_rated: v === true })} />
+                          <Label htmlFor={`li-vat-${idx}`} className="text-xs cursor-pointer whitespace-nowrap">15% VAT</Label>
+                        </div>
+                      </div>
+                      <div className="text-xs text-right text-muted-foreground tabular-nums">
+                        Total: <span className="font-medium text-foreground">{ZAR(calcVat(li.amount_excl_vat, li.vat_rated).amount_incl_vat)}</span>
+                      </div>
+                    </div>
+                  ))}
+                  <Button variant="outline" size="sm" className="w-full gap-1.5 text-xs" onClick={addLine}>
+                    <Plus className="w-3.5 h-3.5" /> Add line item
+                  </Button>
+                  <div className="rounded-xl bg-muted/40 border p-3 space-y-1 text-sm">
+                    <div className="flex justify-between text-muted-foreground"><span>Total excl. VAT</span><span>{ZAR(lineExcl)}</span></div>
+                    <div className="flex justify-between font-medium border-t pt-1 mt-1"><span>Total incl. VAT</span><span>{ZAR(lineTotal)}</span></div>
+                    <p className="text-xs text-muted-foreground">{lineItems.filter(li => li.amount_excl_vat > 0).length} line item{lineItems.filter(li => li.amount_excl_vat > 0).length !== 1 ? 's' : ''} will be saved</p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1441,6 +1628,7 @@ function ExpenseCard({ expense, onMarkPaid }: { expense: Expense; onMarkPaid: (e
           </Badge>
         </div>
       </div>
+      {expense.category && <Badge variant="secondary" className="text-[10px] px-1.5 py-0 w-fit">{expense.category}</Badge>}
       {expense.product_description && <p className="text-xs text-muted-foreground line-clamp-2">{expense.product_description}</p>}
       <div className="flex items-end justify-between pt-1 border-t">
         <div className="text-xs text-muted-foreground space-y-0.5">
@@ -1761,13 +1949,13 @@ export default function ExpensesPage() {
   const fetchExpenses = useCallback(async () => {
     setLoading(true)
     let q = supabase.from('vb_expense')
-      .select('*, vb_supplier(company_name)', { count: 'exact' })
+      .select('expense_id, supplier_id, invoice_number, invoice_date, product_description, amount_excl_vat, vat_rated, vat_amount, amount_incl_vat, date_paid, category, vb_supplier(company_name)', { count: 'exact' })
       .order('invoice_date', { ascending: false })
     q = applyFilters(q)
     const from = (page - 1) * PAGE_SIZE
     q = q.range(from, from + PAGE_SIZE - 1)
     const { data, count } = await q
-    setExpenses((data as Expense[]) ?? [])
+    setExpenses((data as unknown as Expense[]) ?? [])
     setTotal(count ?? 0)
     setLoading(false)
   }, [page, filterMonth, filterYear, filterFY, filterSupplier, filterVat, filterPaid, filterDescription])
@@ -1801,7 +1989,7 @@ export default function ExpensesPage() {
   const refreshAll = async () => Promise.all([fetchExpenses(), fetchAll(), fetchSummary()])
 
   async function insertExpenses(rows: ExpenseRow[]) { await supabase.from('vb_expense').insert(rows); await refreshAll() }
-  async function insertOne(row: ExpenseRow)         { await supabase.from('vb_expense').insert([row]); await refreshAll() }
+  async function insertMany(rows: ExpenseRow[])     { await supabase.from('vb_expense').insert(rows); await refreshAll() }
 
   async function handleSaveVendor(data: SupplierForm, id?: number) {
     if (id) await supabase.from('vb_supplier').update(data).eq('supplier_id', id)
@@ -1939,6 +2127,7 @@ export default function ExpensesPage() {
                   <TableHead>Date</TableHead>
                   <TableHead>Supplier</TableHead>
                   <TableHead>Invoice #</TableHead>
+                  <TableHead>Category</TableHead>
                   <TableHead>Description</TableHead>
                   <TableHead className="text-right">Excl. VAT</TableHead>
                   <TableHead className="text-right">VAT</TableHead>
@@ -1950,14 +2139,19 @@ export default function ExpensesPage() {
               </TableHeader>
               <TableBody>
                 {loading ? (
-                  <TableRow><TableCell colSpan={10} className="text-center py-12 text-muted-foreground text-sm"><Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" />Loading…</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={11} className="text-center py-12 text-muted-foreground text-sm"><Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" />Loading…</TableCell></TableRow>
                 ) : expenses.length === 0 ? (
-                  <TableRow><TableCell colSpan={10} className="text-center py-12 text-muted-foreground text-sm">No expenses found for the selected filters.</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={11} className="text-center py-12 text-muted-foreground text-sm">No expenses found for the selected filters.</TableCell></TableRow>
                 ) : expenses.map(e => (
                   <TableRow key={e.expense_id}>
                     <TableCell className="text-sm tabular-nums whitespace-nowrap">{new Date(e.invoice_date).toLocaleDateString('en-ZA')}</TableCell>
                     <TableCell className="text-sm max-w-[160px] truncate">{e.vb_supplier?.company_name ?? '—'}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{e.invoice_number ?? '—'}</TableCell>
+                    <TableCell className="text-sm">
+                      {e.category
+                        ? <Badge variant="secondary" className="text-[10px] px-1.5 py-0 whitespace-nowrap">{e.category}</Badge>
+                        : <span className="text-muted-foreground">—</span>}
+                    </TableCell>
                     <TableCell className="text-sm max-w-[180px] truncate">{e.product_description ?? '—'}</TableCell>
                     <TableCell className="text-sm text-right tabular-nums">{ZAR(Number(e.amount_excl_vat))}</TableCell>
                     <TableCell className="text-sm text-right tabular-nums text-muted-foreground">{ZAR(Number(e.vat_amount))}</TableCell>
@@ -2033,7 +2227,7 @@ export default function ExpensesPage() {
       </Tabs>
 
       <UploadModal open={showUpload} onClose={() => setShowUpload(false)} suppliers={suppliers} onImport={insertExpenses} />
-      <AddExpenseModal open={showAdd} onClose={() => setShowAdd(false)} suppliers={suppliers} onSave={insertOne} />
+      <AddExpenseModal open={showAdd} onClose={() => setShowAdd(false)} suppliers={suppliers} onSave={insertMany} />
       <VendorModal open={vendorModalOpen} onClose={() => setVendorModalOpen(false)} initial={editingVendor} onSave={handleSaveVendor} />
       <MarkPaidModal
         open={!!markPaidExpense}
