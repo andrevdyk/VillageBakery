@@ -75,6 +75,27 @@ type SortDir = 'asc' | 'desc'
 const ZAR = (n: number | null | undefined) =>
   n == null ? '—' : new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(n)
 
+// Parse a number from Excel cell — handles both period and comma decimal separators
+// (South African Excel files use comma as decimal: "8,731884058" → 8.731884058)
+function safeNum(v: any): number {
+  if (v == null || v === '') return 0
+  if (typeof v === 'number') return isFinite(v) ? v : 0
+  const s = String(v).trim().replace(/\s/g, '')
+  // Comma after no period → comma is decimal separator (e.g. "8,73" or "121,5")
+  const commaIdx  = s.lastIndexOf(',')
+  const periodIdx = s.lastIndexOf('.')
+  if (commaIdx > periodIdx) {
+    // Remove any period thousands-separators, then swap comma to period
+    return parseFloat(s.replace(/\./g, '').replace(',', '.')) || 0
+  }
+  return parseFloat(s.replace(/,/g, '')) || 0
+}
+function safeNumOrNull(v: any): number | null {
+  if (v == null || v === '') return null
+  const n = safeNum(v)
+  return n === 0 && (v === 0 || String(v).trim() === '0') ? 0 : (n || null)
+}
+
 const fmtDate  = (d: string) => new Date(d + 'T12:00:00').toLocaleDateString('en-ZA', { year: 'numeric', month: 'short', day: 'numeric' })
 const fmtMonth = (d: string) => new Date(d + 'T12:00:00').toLocaleDateString('en-ZA', { year: 'numeric', month: 'long' })
 
@@ -721,7 +742,8 @@ function colLetter(idx: number): string {
 }
 
 type UnmatchedRow = {
-  description: string; opening_stock: number; new_received: number
+  description: string; plu: string | null; cost_per_item: number | null
+  opening_stock: number; new_received: number
   closing_stock: number; items_sold: number | null; revenue: number | null
   category_id: number | null; include: boolean; rawRowIdx: number
 }
@@ -746,6 +768,8 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
   const [selectedDate, setSelectedDate]     = useState(countDate)
   const [showRaw, setShowRaw]               = useState(false)
   const [highlightedRawRow, setHighlightedRawRow] = useState<number | null>(null)
+  // Separate map for cost-per-item updates: item_id → new cost value from Excel
+  const [costUpdateMap, setCostUpdateMap] = useState<Map<number, number>>(new Map())
   const fileRef    = useRef<HTMLInputElement>(null)
   const rawPanelRef = useRef<HTMLDivElement>(null)
   const monthOptions = useMemo(() => getLastNMonths(24), [])
@@ -755,6 +779,7 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
       setFile(null); setRows([]); setRawData([]); setHeaderRowIdx(-1); setError('')
       setUnmatchedRows([]); setShowUnmatched(false); setShowRaw(false)
       setHighlightedRawRow(null); setAddingCat(false); setNewCatName('')
+      setCostUpdateMap(new Map())
     } else {
       setSelectedDate(countDate); setCatList(categories)
     }
@@ -784,8 +809,10 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
   const categoryStats = useMemo(() => {
     const map = new Map<string, { opening: number; closing: number; received: number; revenue: number; opValue: number; clValue: number }>()
     for (const row of rows) {
-      const cat   = idToCategory.get(row.item_id) ?? 'Uncategorised'
-      const price = priceMap.get(row.item_id)?.unit_cost ?? 0
+      const cat       = idToCategory.get(row.item_id) ?? 'Uncategorised'
+      // Use Excel cost where available, fall back to stored cost
+      const excelCost = costUpdateMap.get(row.item_id)
+      const price     = excelCost ?? priceMap.get(row.item_id)?.unit_cost ?? 0
       const e = map.get(cat) ?? { opening: 0, closing: 0, received: 0, revenue: 0, opValue: 0, clValue: 0 }
       e.opening  += row.opening_stock ?? 0
       e.closing  += row.closing_stock ?? 0
@@ -796,7 +823,7 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
       map.set(cat, e)
     }
     return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]))
-  }, [rows, idToCategory, priceMap])
+  }, [rows, idToCategory, priceMap, costUpdateMap])
 
   const totals = useMemo(() => ({
     opening:  rows.reduce((s, r) => s + (r.opening_stock ?? 0), 0),
@@ -808,13 +835,15 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
   const valueStats = useMemo(() => {
     let opValue = 0, clValue = 0, revenue = 0
     for (const row of rows) {
-      const price = priceMap.get(row.item_id)?.sell_price ?? 0
-      opValue += (row.opening_stock ?? 0) * price
-      clValue += (row.closing_stock  ?? 0) * price
+      // Prefer the Excel cost (costUpdateMap) over the stored Supabase cost for accurate valuation
+      const excelCost = costUpdateMap.get(row.item_id)
+      const unitCost  = excelCost ?? priceMap.get(row.item_id)?.unit_cost ?? 0
+      opValue += (row.opening_stock ?? 0) * unitCost
+      clValue += (row.closing_stock  ?? 0) * unitCost
       revenue += row.revenue ?? 0
     }
     return { opValue, clValue, revenue }
-  }, [rows, priceMap])
+  }, [rows, priceMap, costUpdateMap])
 
   useEffect(() => {
     if (highlightedRawRow === null) return
@@ -844,30 +873,46 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
         setHeaderRowIdx(headerIdx)
 
         const headers = (data[headerIdx] as string[]).map(h => String(h ?? '').toUpperCase().trim())
-        const itemCol  = headers.findIndex(h => h === 'ITEM')
-        const openCol  = headers.findIndex(h => h.includes('O/STOCK') || h.includes('OPENING'))
-        const recvCol  = headers.findIndex(h => h.includes('NEW STOCK') || h.includes('RECEIVED'))
-        const closeCol = headers.findIndex(h => h.includes('C/STOCK') || h.includes('CLOSING'))
-        const soldCol  = headers.findIndex(h => h.includes('ITEMS SOLD'))
-        const revCol   = headers.findIndex(h => h.includes('REVENUE'))
+        const pluCol      = headers.findIndex(h => h === 'PLU')
+        const itemCol     = headers.findIndex(h => h === 'ITEM')
+        // O/STOCK = opening; match common variants
+        const openCol     = headers.findIndex(h => h === 'O/STOCK' || h === 'OP STOCK' || h.startsWith('O/STOCK') || h.includes('OPENING STOCK') || (h.includes('OPENING') && !h.includes('VALUE')))
+        // C/STOCK = closing; match common variants
+        const closeCol    = headers.findIndex(h => h === 'C/STOCK' || h === 'CL STOCK' || h.startsWith('C/STOCK') || h.includes('CLOSING STOCK') || (h.includes('CLOSING') && !h.includes('VALUE')))
+        // NEW STOCK RECEIVED = units received this period
+        const recvCol     = headers.findIndex(h => h.includes('NEW STOCK') || h === 'RECEIVED')
+        // ITEMS SOLD / POS SOLD = actual unit sales from POS
+        const soldCol     = headers.findIndex(h => h === 'ITEMS SOLD' || h === 'POS SOLD')
+        const revCol      = headers.findIndex(h => h === 'REVENUE')
+        // COST PER ITEM = unit cost price; exclude case-cost columns (COST(INCL), COST PRICE, etc.)
+        const costPerItemCol = headers.findIndex(h =>
+          (h === 'COST PER ITEM' || h === 'COST PER UNIT' || h === 'UNIT COST' || h === 'COST/ITEM') &&
+          !h.includes('INCL') && !h.includes('CASE')
+        )
 
         if (itemCol < 0 || openCol < 0 || closeCol < 0)
           return setError(`Missing required columns. Found: ${headers.filter(Boolean).join(', ')}`)
 
+        // Build lookup maps — PLU match takes priority over description match
         const descMap = new Map<string, number>()
-        for (const item of items) descMap.set(item.description.trim().toUpperCase(), item.item_id)
+        const pluMap  = new Map<string, number>()
+        for (const item of items) {
+          descMap.set(item.description.trim().toUpperCase(), item.item_id)
+          if (item.plu) pluMap.set(String(item.plu).trim(), item.item_id)
+        }
 
         const catNames = new Set(catList.map(c => c.name.trim().toUpperCase()))
 
         const parsed: any[] = []
         const unmatched_: UnmatchedRow[] = []
+        const costMap = new Map<number, number>()
         for (let i = headerIdx + 1; i < data.length; i++) {
           const row  = data[i]
           const desc = String(row[itemCol] ?? '').trim()
           if (!desc || desc.toLowerCase() === 'total') continue
           // skip rows that match a known category name
           if (catNames.has(desc.toUpperCase())) continue
-          // skip rows that look like section headers: all-caps text AND every numeric column is zero
+          // skip rows that look like section headers: all-caps text AND every numeric column is zero/blank
           const numericVals = [row[openCol], row[closeCol],
             recvCol >= 0 ? row[recvCol] : null,
             soldCol >= 0 ? row[soldCol] : null,
@@ -876,31 +921,50 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
           const isAllZero = numericVals.every(v => v === 0)
           const isAllCaps = desc === desc.toUpperCase() && /^[A-Z\s&\/\-]+$/.test(desc)
           if (isAllCaps && isAllZero) continue
-          const itemId = descMap.get(desc.toUpperCase())
-          // In this Excel format the "Items Sold" column holds new stock received (purchases).
-          // Read it first; fall back to "NEW STOCK RECEIVED" if Items Sold is absent.
-          const rowPurchases = (soldCol >= 0 && row[soldCol] != null ? parseFloat(row[soldCol]) || 0 : null)
-                            ?? (recvCol >= 0 ? parseFloat(row[recvCol]) || 0 : 0)
+
+          // PLU from Excel (convert to integer string to match stored PLU)
+          const rawPlu = pluCol >= 0 && row[pluCol] != null && row[pluCol] !== ''
+            ? String(Math.round(safeNum(row[pluCol]))) : ''
+          // Match: PLU first, then description
+          const itemId = (rawPlu && rawPlu !== '0' && pluMap.get(rawPlu)) || descMap.get(desc.toUpperCase())
+
+          // Cost per item from Excel — use safeNum so "8,731884058" (ZA comma decimal) → 8.731884058
+          const excelCostPerItem = costPerItemCol >= 0 && row[costPerItemCol] != null && row[costPerItemCol] !== ''
+            ? (safeNum(row[costPerItemCol]) || null) : null
+
+          // New stock received comes from the "NEW STOCK RECEIVED" column only
+          // Items Sold is actual POS sales — not purchases
+          const rowReceived  = recvCol >= 0 ? safeNum(row[recvCol]) : 0
+          const excelSold    = soldCol >= 0 ? safeNumOrNull(row[soldCol]) : null
+          const excelRevenue = revCol  >= 0 ? safeNumOrNull(row[revCol])  : null
+
           if (!itemId) {
             if (desc.length > 2) unmatched_.push({
-              description: desc,
-              opening_stock: parseFloat(row[openCol]) || 0,
-              new_received:  rowPurchases,
-              closing_stock: parseFloat(row[closeCol]) || 0,
-              items_sold: null,
-              revenue:    revCol >= 0 && row[revCol] != null ? (parseFloat(row[revCol]) || null) : null,
+              description: desc, plu: rawPlu || null, cost_per_item: excelCostPerItem,
+              opening_stock: safeNum(row[openCol]),
+              new_received:  rowReceived,
+              closing_stock: safeNum(row[closeCol]),
+              items_sold: excelSold,
+              revenue:    excelRevenue,
               category_id: null, include: false, rawRowIdx: i,
             })
             continue
           }
-          const os = parseFloat(row[openCol])  || 0
-          const cs = parseFloat(row[closeCol]) || 0
-          // Received: if closing > opening, stock grew — include the increase on top of purchases
-          const nr   = (os - cs < 0) ? (cs - os + rowPurchases) : rowPurchases
-          // Sold: if opening > closing, stock shrank — include the decrease on top of purchases
-          const sold = (os - cs > 0) ? (os - cs + rowPurchases) : rowPurchases
+          const os = safeNum(row[openCol])
+          const cs = safeNum(row[closeCol])
+          const nr = rowReceived
+
+          // Track cost updates in the dedicated map — safeNum already handles comma decimals
+          if (excelCostPerItem != null && excelCostPerItem > 0) {
+            costMap.set(itemId, excelCostPerItem)
+          }
+
+          // For items_sold: use the Excel "Items Sold" column directly if present,
+          // otherwise fall back to the stock movement (os + nr - cs)
+          const sold = excelSold ?? Math.max(0, os + nr - cs)
           const sellP   = priceMap.get(itemId)?.sell_price ?? 0
-          const revenue = sold * sellP
+          const revenue = excelRevenue ?? (sold * sellP)
+
           const base: any = {
             item_id: itemId, count_date: selectedDate,
             opening_stock: os, new_received: nr, closing_stock: cs, notes: null,
@@ -912,7 +976,7 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
           }
           parsed.push(base)
         }
-        setRows(parsed); setUnmatchedRows(unmatched_)
+        setRows(parsed); setUnmatchedRows(unmatched_); setCostUpdateMap(costMap)
         if (unmatched_.length > 0) setShowUnmatched(true)
       } catch (err: any) { setError('Failed to parse file: ' + err.message) }
     }
@@ -945,13 +1009,27 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
     if (!rows.length && !toCreate.length) return
     setSaving(true)
     const supabase = createClient()
+    const itemTable = mode === 'retail' ? 'vb_retail_stock_item' : 'vb_food_stock_item'
+    const costField = mode === 'retail' ? 'cost_per_item' : 'cost_per_unit'
+
+    // Strip internal tracking fields from count rows
     const clean = rows.map(({ _description, _rawRowIdx, ...rest }) => rest)
+
+    // Update item cost prices using the dedicated costUpdateMap (item_id → new cost from Excel)
+    if (costUpdateMap.size > 0) {
+      await Promise.all(Array.from(costUpdateMap.entries()).map(([itemId, cost]) =>
+        supabase.from(itemTable).update({ [costField]: cost }).eq('item_id', itemId)
+      ))
+    }
+
+    // Create new items from the unmatched rows the user chose to include
     for (const ur of toCreate) {
-      const table = mode === 'retail' ? 'vb_retail_stock_item' : 'vb_food_stock_item'
-      const { data } = await supabase
-        .from(table)
-        .insert([{ description: ur.description, category_id: ur.category_id, is_active: true }])
-        .select('item_id').single()
+      const newItemData: Record<string, any> = {
+        description: ur.description, category_id: ur.category_id, is_active: true,
+      }
+      if (ur.plu)           newItemData.plu        = ur.plu
+      if (ur.cost_per_item) newItemData[costField]  = ur.cost_per_item
+      const { data } = await supabase.from(itemTable).insert([newItemData]).select('item_id').single()
       if (data?.item_id) clean.push({
         item_id: data.item_id, count_date: selectedDate,
         opening_stock: ur.opening_stock, new_received: ur.new_received,
@@ -1041,6 +1119,11 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
                 <div className="rounded-xl border bg-muted/30 p-3 flex items-center gap-3 flex-wrap">
                   <Check className="w-4 h-4 text-emerald-500 shrink-0" />
                   <span className="text-sm font-medium text-emerald-700">{rows.length} items matched</span>
+                  {costUpdateMap.size > 0 && (
+                    <span className="text-xs text-blue-600 flex items-center gap-1">
+                      <RefreshCw className="w-3 h-3" />{costUpdateMap.size} item prices will be updated from COST PER ITEM
+                    </span>
+                  )}
                   {unmatchedRows.length > 0 && (
                     <span className="text-xs text-amber-600 flex items-center gap-1">
                       <AlertTriangle className="w-3 h-3" />{unmatchedRows.length} not found in item list
@@ -1068,12 +1151,12 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
                             <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur-sm z-10">
                               <TableRow>
                                 <TableHead className="w-8 text-xs text-center sticky left-0 bg-muted/80 z-20">Inc.</TableHead>
+                                <TableHead className="text-xs w-14">PLU</TableHead>
                                 <TableHead className="text-xs">Item description</TableHead>
-                                <TableHead className="text-right text-xs w-20">Open Qty</TableHead>
-                                <TableHead className="text-right text-xs w-20">Close Qty</TableHead>
-                                <TableHead className="text-right text-xs w-24">Purchased</TableHead>
-                                <TableHead className="text-right text-xs w-20">Sold</TableHead>
-                                <TableHead className="text-right text-xs w-28">Revenue</TableHead>
+                                <TableHead className="text-right text-xs w-20">Cost/Item</TableHead>
+                                <TableHead className="text-right text-xs w-16">Open</TableHead>
+                                <TableHead className="text-right text-xs w-16">Close</TableHead>
+                                <TableHead className="text-right text-xs w-16">Recv</TableHead>
                                 <TableHead className="text-xs w-44">Assign category</TableHead>
                               </TableRow>
                             </TableHeader>
@@ -1086,12 +1169,12 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
                                     <Checkbox checked={ur.include}
                                       onCheckedChange={v => setUnmatchedRows(r => r.map((row, j) => j === i ? { ...row, include: !!v } : row))} />
                                   </TableCell>
-                                  <TableCell className="text-xs font-medium py-1 max-w-[220px] truncate" title={ur.description}>{ur.description}</TableCell>
+                                  <TableCell className="text-xs text-muted-foreground py-1">{ur.plu ?? '—'}</TableCell>
+                                  <TableCell className="text-xs font-medium py-1 max-w-[200px] truncate" title={ur.description}>{ur.description}</TableCell>
+                                  <TableCell className="text-right text-xs tabular-nums py-1">{ur.cost_per_item != null ? ZAR(ur.cost_per_item) : '—'}</TableCell>
                                   <TableCell className="text-right text-xs tabular-nums py-1">{ur.opening_stock}</TableCell>
                                   <TableCell className="text-right text-xs tabular-nums py-1">{ur.closing_stock}</TableCell>
                                   <TableCell className="text-right text-xs tabular-nums py-1">{ur.new_received}</TableCell>
-                                  <TableCell className="text-right text-xs tabular-nums py-1">{ur.items_sold ?? '—'}</TableCell>
-                                  <TableCell className="text-right text-xs tabular-nums py-1">{ur.revenue != null ? ZAR(ur.revenue) : '—'}</TableCell>
                                   <TableCell className="py-1" onClick={e => e.stopPropagation()}>
                                     <Select
                                       value={ur.category_id?.toString() ?? ''}
@@ -1139,17 +1222,26 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
                 {rows.length > 0 && (
                   <>
                     <div className={`grid gap-3 ${mode === 'retail' ? 'grid-cols-4' : 'grid-cols-3'}`}>
-                      {[
-                        { label: 'Total Opening',  value: totals.opening.toLocaleString('en-ZA') },
-                        { label: 'Total Closing',  value: totals.closing.toLocaleString('en-ZA') },
-                        { label: 'Total Purchases', value: totals.received.toLocaleString('en-ZA') },
-                        ...(mode === 'retail' ? [{ label: 'Total Revenue', value: ZAR(totals.revenue) }] : []),
-                      ].map(({ label, value }) => (
-                        <div key={label} className="rounded-xl border bg-card p-3 text-center">
-                          <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">{label}</p>
-                          <p className="font-bold text-sm tabular-nums">{value}</p>
+                      <div className="rounded-xl border bg-card p-3 text-center">
+                        <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">Opening Stock</p>
+                        <p className="font-bold text-sm tabular-nums">{totals.opening.toLocaleString('en-ZA')} units</p>
+                        <p className="text-xs text-muted-foreground tabular-nums mt-0.5">{ZAR(valueStats.opValue)}</p>
+                      </div>
+                      <div className="rounded-xl border bg-card p-3 text-center">
+                        <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">Closing Stock</p>
+                        <p className="font-bold text-sm tabular-nums">{totals.closing.toLocaleString('en-ZA')} units</p>
+                        <p className="text-xs text-muted-foreground tabular-nums mt-0.5">{ZAR(valueStats.clValue)}</p>
+                      </div>
+                      <div className="rounded-xl border bg-card p-3 text-center">
+                        <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">Total Purchases</p>
+                        <p className="font-bold text-sm tabular-nums">{totals.received.toLocaleString('en-ZA')} units</p>
+                      </div>
+                      {mode === 'retail' && (
+                        <div className="rounded-xl border bg-card p-3 text-center">
+                          <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">Total Revenue</p>
+                          <p className="font-bold text-sm tabular-nums">{ZAR(totals.revenue)}</p>
                         </div>
-                      ))}
+                      )}
                     </div>
 
                     <div className="rounded-xl border flex flex-col">
@@ -1160,10 +1252,10 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
                             <TableRow className="bg-muted/20">
                               <TableHead className="text-xs font-semibold">Category</TableHead>
                               <TableHead className="text-right text-xs font-semibold">Open Qty</TableHead>
+                              <TableHead className="text-right text-xs font-semibold">Open Value</TableHead>
                               <TableHead className="text-right text-xs font-semibold">Close Qty</TableHead>
+                              <TableHead className="text-right text-xs font-semibold">Close Value</TableHead>
                               <TableHead className="text-right text-xs font-semibold">Purchases</TableHead>
-                              {mode === 'retail' && <TableHead className="text-right text-xs font-semibold">Open Value</TableHead>}
-                              {mode === 'retail' && <TableHead className="text-right text-xs font-semibold">Close Value</TableHead>}
                               {mode === 'retail' && <TableHead className="text-right text-xs font-semibold">Revenue</TableHead>}
                             </TableRow>
                           </TableHeader>
@@ -1172,10 +1264,10 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
                               <TableRow key={cat}>
                                 <TableCell className="text-xs font-medium py-1.5">{cat}</TableCell>
                                 <TableCell className="text-right text-xs tabular-nums py-1.5">{s.opening.toLocaleString('en-ZA')}</TableCell>
+                                <TableCell className="text-right text-xs tabular-nums py-1.5">{ZAR(s.opValue)}</TableCell>
                                 <TableCell className="text-right text-xs tabular-nums py-1.5">{s.closing.toLocaleString('en-ZA')}</TableCell>
+                                <TableCell className="text-right text-xs tabular-nums py-1.5">{ZAR(s.clValue)}</TableCell>
                                 <TableCell className="text-right text-xs tabular-nums py-1.5">{s.received.toLocaleString('en-ZA')}</TableCell>
-                                {mode === 'retail' && <TableCell className="text-right text-xs tabular-nums py-1.5">{ZAR(s.opValue)}</TableCell>}
-                                {mode === 'retail' && <TableCell className="text-right text-xs tabular-nums py-1.5">{ZAR(s.clValue)}</TableCell>}
                                 {mode === 'retail' && <TableCell className="text-right text-xs tabular-nums py-1.5">{ZAR(s.revenue)}</TableCell>}
                               </TableRow>
                             ))}
@@ -1193,57 +1285,67 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
                           <TableHeader className="sticky top-0 bg-muted/80 backdrop-blur-sm z-10">
                             <TableRow>
                               <TableHead className="text-xs">Item</TableHead>
-                              <TableHead className="text-xs w-32">Category</TableHead>
-                              <TableHead className="text-right text-xs w-24">Cost</TableHead>
-                              <TableHead className="text-right text-xs w-24">Price</TableHead>
-                              <TableHead className="text-right text-xs w-24">Open</TableHead>
-                              <TableHead className="text-right text-xs w-24">Received</TableHead>
-                              <TableHead className="text-right text-xs w-24">Close</TableHead>
-                              {mode === 'retail' && <TableHead className="text-right text-xs w-24">Sold</TableHead>}
-                              {mode === 'retail' && <TableHead className="text-right text-xs w-28">Revenue</TableHead>}
+                              <TableHead className="text-xs w-28">Category</TableHead>
+                              <TableHead className="text-right text-xs w-20">Cost</TableHead>
+                              <TableHead className="text-right text-xs w-20">Price</TableHead>
+                              <TableHead className="text-right text-xs w-20">Open Qty</TableHead>
+                              <TableHead className="text-right text-xs w-24">Open Value</TableHead>
+                              <TableHead className="text-right text-xs w-20">Received</TableHead>
+                              <TableHead className="text-right text-xs w-20">Close Qty</TableHead>
+                              <TableHead className="text-right text-xs w-24">Close Value</TableHead>
+                              {mode === 'retail' && <TableHead className="text-right text-xs w-20">Sold</TableHead>}
+                              {mode === 'retail' && <TableHead className="text-right text-xs w-24">Revenue</TableHead>}
                               <TableHead className="w-8" />
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {rows.map((row, i) => (
+                            {rows.map((row, i) => {
+                              // Prefer the cost extracted from Excel (costUpdateMap) over the stored Supabase value
+                              const excelCost    = costUpdateMap.get(row.item_id) ?? null
+                              const storedCost   = priceMap.get(row.item_id)?.unit_cost ?? 0
+                              const effectiveCost = excelCost ?? storedCost
+                              const costChanged   = excelCost !== null && excelCost !== storedCost
+                              const opValue = (row.opening_stock ?? 0) * effectiveCost
+                              const clValue = (row.closing_stock  ?? 0) * effectiveCost
+                              return (
                               <TableRow key={i}
                                 className={`group cursor-pointer ${highlightedRawRow === row._rawRowIdx ? 'bg-yellow-50' : ''}`}
                                 onClick={() => setHighlightedRawRow(row._rawRowIdx)}>
-                                <TableCell className="text-xs font-medium truncate max-w-[180px] py-1" title={row._description}>{row._description}</TableCell>
-                                <TableCell className="text-xs text-muted-foreground py-1 truncate max-w-[120px]">{idToCategory.get(row.item_id) ?? '—'}</TableCell>
-                                <TableCell className="text-right text-xs tabular-nums py-1">{ZAR(priceMap.get(row.item_id)?.unit_cost ?? null)}</TableCell>
+                                <TableCell className="text-xs font-medium truncate max-w-[160px] py-1" title={row._description}>{row._description}</TableCell>
+                                <TableCell className="text-xs text-muted-foreground py-1 truncate max-w-[100px]">{idToCategory.get(row.item_id) ?? '—'}</TableCell>
+                                {/* Cost cell: show Excel cost; if it differs from stored, strike through old value */}
+                                <TableCell className="text-right text-xs tabular-nums py-1">
+                                  {costChanged ? (
+                                    <div className="flex flex-col items-end gap-0.5">
+                                      <span className="font-semibold text-blue-600">{ZAR(excelCost)}</span>
+                                      <span className="text-[10px] line-through text-muted-foreground">{ZAR(storedCost)}</span>
+                                    </div>
+                                  ) : (
+                                    <span>{ZAR(effectiveCost || null)}</span>
+                                  )}
+                                </TableCell>
                                 <TableCell className="text-right text-xs tabular-nums py-1">{ZAR(priceMap.get(row.item_id)?.sell_price ?? null)}</TableCell>
-                                <TableCell className="py-0.5"><Input type="number" value={row.opening_stock ?? ''} onChange={e => updateRow(i, 'opening_stock', e.target.value)} className="h-7 text-xs text-right w-20 ml-auto" /></TableCell>
-                                <TableCell className="py-0.5"><Input type="number" value={row.new_received ?? ''} onChange={e => updateRow(i, 'new_received', e.target.value)} className="h-7 text-xs text-right w-20 ml-auto" /></TableCell>
-                                <TableCell className="py-0.5"><Input type="number" value={row.closing_stock ?? ''} onChange={e => updateRow(i, 'closing_stock', e.target.value)} className="h-7 text-xs text-right w-20 ml-auto" /></TableCell>
-                                {mode === 'retail' && <TableCell className="py-0.5"><Input type="number" value={row.items_sold ?? ''} onChange={e => updateRow(i, 'items_sold', e.target.value)} className="h-7 text-xs text-right w-20 ml-auto" /></TableCell>}
-                                {mode === 'retail' && <TableCell className="py-0.5"><Input type="number" value={row.revenue ?? ''} onChange={e => updateRow(i, 'revenue', e.target.value)} className="h-7 text-xs text-right w-24 ml-auto" /></TableCell>}
+                                <TableCell className="py-0.5"><Input type="number" value={row.opening_stock ?? ''} onChange={e => updateRow(i, 'opening_stock', e.target.value)} className="h-7 text-xs text-right w-16 ml-auto" /></TableCell>
+                                <TableCell className="text-right text-xs tabular-nums py-1 text-muted-foreground">{opValue > 0 ? ZAR(opValue) : '—'}</TableCell>
+                                <TableCell className="py-0.5"><Input type="number" value={row.new_received ?? ''} onChange={e => updateRow(i, 'new_received', e.target.value)} className="h-7 text-xs text-right w-16 ml-auto" /></TableCell>
+                                <TableCell className="py-0.5"><Input type="number" value={row.closing_stock ?? ''} onChange={e => updateRow(i, 'closing_stock', e.target.value)} className="h-7 text-xs text-right w-16 ml-auto" /></TableCell>
+                                <TableCell className="text-right text-xs tabular-nums py-1 text-muted-foreground">{clValue > 0 ? ZAR(clValue) : '—'}</TableCell>
+                                {mode === 'retail' && <TableCell className="py-0.5"><Input type="number" value={row.items_sold ?? ''} onChange={e => updateRow(i, 'items_sold', e.target.value)} className="h-7 text-xs text-right w-16 ml-auto" /></TableCell>}
+                                {mode === 'retail' && <TableCell className="py-0.5"><Input type="number" value={row.revenue ?? ''} onChange={e => updateRow(i, 'revenue', e.target.value)} className="h-7 text-xs text-right w-20 ml-auto" /></TableCell>}
                                 <TableCell className="py-0.5 w-8">
                                   <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => removeRow(i)}>
                                     <Trash2 className="w-3.5 h-3.5" />
                                   </Button>
                                 </TableCell>
                               </TableRow>
-                            ))}
+                            )
+                            })}
+
                           </TableBody>
                         </Table>
                       </div>
                     </div>
 
-                    {mode === 'retail' && (
-                      <div className="grid grid-cols-3 gap-3">
-                        {[
-                          { label: 'Opening Stock Value', value: ZAR(valueStats.opValue) },
-                          { label: 'Closing Stock Value',  value: ZAR(valueStats.clValue) },
-                          { label: 'Total Revenue',        value: ZAR(valueStats.revenue) },
-                        ].map(({ label, value }) => (
-                          <div key={label} className="rounded-xl border bg-card p-3 text-center">
-                            <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">{label}</p>
-                            <p className="font-bold text-sm tabular-nums">{value}</p>
-                          </div>
-                        ))}
-                      </div>
-                    )}
                   </>
                 )}
               </>
