@@ -6,8 +6,9 @@ import {
   TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle2,
   XCircle, BarChart3, DollarSign, ShoppingCart, Receipt,
   Users, Package, ArrowUpRight, ArrowDownRight, RefreshCw,
-  Calendar, ChevronDown, Info, Loader2, Scale,
+  Calendar, ChevronDown, Info, Loader2, Scale, FileDown,
 } from 'lucide-react'
+import { jsPDF } from 'jspdf'
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Cell, PieChart, Pie, Legend,
@@ -684,18 +685,18 @@ export default function BusinessDashboard() {
     // Revenue: Z-print divided by 1.15 to exclude VAT
     const sales = filteredSheets.reduce((s, r) => s + parseNum(r.till_total_z_print), 0) / 1.15
 
-    // COS from stock counts: Opening Stock Value + Purchases - Closing Stock Value
-    const cosRetail = Math.max(0,
-      filteredCounts.reduce((s, c) => s + (c.op_stock_value ?? 0), 0) +
-      filteredCounts.reduce((s, c) => s + (c.new_received ?? 0) * (c.cost_per_item ?? 0), 0) -
-      filteredCounts.reduce((s, c) => s + (c.cl_stock_value ?? 0), 0)
-    )
-    const cosFood = Math.max(0,
-      filteredFoodCounts.reduce((s, c) => s + (c.op_stock_value ?? 0), 0) +
-      filteredFoodCounts.reduce((s, c) => s + (c.new_received ?? 0) * (c.cost_per_unit ?? 0), 0) -
-      filteredFoodCounts.reduce((s, c) => s + (c.cl_stock_value ?? 0), 0)
-    )
-    const totalCos  = cosRetail + cosFood
+    // COS = Opening Stock Value + Purchases (from expenses) − Closing Stock Value
+    const retailOpStock  = filteredCounts.reduce((s, c) => s + (c.op_stock_value ?? 0), 0)
+    const retailPurchases = expCat('COS RETAIL')
+    const retailClStock  = filteredCounts.reduce((s, c) => s + (c.cl_stock_value ?? 0), 0)
+    const cosRetail = Math.max(0, retailOpStock + retailPurchases - retailClStock)
+
+    const foodOpStock    = filteredFoodCounts.reduce((s, c) => s + (c.op_stock_value ?? 0), 0)
+    const foodPurchases  = expCat('COS FOOD')
+    const foodClStock    = filteredFoodCounts.reduce((s, c) => s + (c.cl_stock_value ?? 0), 0)
+    const cosFood = Math.max(0, foodOpStock + foodPurchases - foodClStock)
+
+    const totalCos = cosRetail + cosFood
 
     // Courier / delivery
     const courierFees = expCat('TRANSPORT')
@@ -766,6 +767,8 @@ export default function BusinessDashboard() {
 
     return {
       sales, cosRetail, cosFood, totalCos, courierFees, grossProfit,
+      retailOpStock, retailPurchases, retailClStock,
+      foodOpStock, foodPurchases, foodClStock,
       wages, casualWages, grossAfterWages,
       uifPaye, depreciationByAsset, totalDepreciation,
       overheads, totalOverheads, totalExpenses,
@@ -851,11 +854,13 @@ export default function BusinessDashboard() {
   )
 
   return (
-    <div className="max-w-7xl mx-auto px-4 lg:px-8 py-6 space-y-6">
+    <div className="max-w-[100vw] mx-auto space-y-2 h-full">
       <Header />
+    <div className="px-4 mx-auto  space-y-6">
+      
 
       {/* Page header */}
-      <div className="flex items-start justify-between gap-4 flex-wrap">
+      <div className="flex items-start justify-between gap-4 flex-wrap px-8">
         <div>
           <h1 className="text-xl font-bold tracking-tight">Business Overview</h1>
           <p className="text-xs text-muted-foreground mt-0.5">
@@ -1727,12 +1732,15 @@ export default function BusinessDashboard() {
 
       </Tabs>
     </div>
+    </div>
   )
 }
 
 // ─── P&L / Income Statement Tab ───────────────────────────────────────────────
 interface ISData {
   sales: number; cosRetail: number; cosFood: number; totalCos: number
+  retailOpStock: number; retailPurchases: number; retailClStock: number
+  foodOpStock: number; foodPurchases: number; foodClStock: number
   courierFees: number; grossProfit: number; wages: number; casualWages: number
   grossAfterWages: number; uifPaye: number
   depreciationByAsset: { description: string; monthly: number; total: number }[]
@@ -1754,6 +1762,195 @@ function PLTab({
 }) {
   const ZAR_pl = (n: number) =>
     new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(n)
+
+  // ── PDF Export ────────────────────────────────────────────────────────────
+  async function exportPDF() {
+    // A3 portrait — plenty of vertical room for the full statement
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a3' })
+    const PW = 297, PH = 420
+    const ML = 20, MR = 20, colRight = PW - MR
+
+    type RGB = [number, number, number]
+    const C: Record<string, RGB> = {
+      coffee:    [92,  61,  46],
+      caramel:   [196, 135,  74],
+      cream:     [245, 237, 216],
+      muted:     [140, 118, 100],
+      border:    [218, 206, 194],
+      green:     [45,  120,  70],
+      red:       [185,  50,  35],
+      white:     [255, 255, 255],
+      strip:     [250, 246, 240],
+    }
+
+    // ── Header band ──────────────────────────────────────────────────────────
+    const HEADER_H = 38
+    doc.setFillColor(...C.coffee)
+    doc.rect(0, 0, PW, HEADER_H, 'F')
+
+    // Caramel accent stripe
+    doc.setFillColor(...C.caramel)
+    doc.rect(0, HEADER_H, PW, 3, 'F')
+
+    // Load + draw logo (top-left)
+    try {
+      const logoImg = new Image()
+      logoImg.src = '/logolight.png'
+      await new Promise<void>((res, rej) => {
+        logoImg.onload = () => res()
+        logoImg.onerror = () => rej()
+      })
+      // Logo is ~580×450px → ratio 1.29 wide; render 32mm wide × 25mm tall
+      doc.addImage(logoImg, 'PNG', ML, 4, 32, 25)
+    } catch { /* logo failed — skip silently */ }
+
+    // "VILLAGE BAKERY" text — right of logo
+    const textX = ML + 36
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(22)
+    doc.setTextColor(...C.white)
+    doc.text('VILLAGE BAKERY', textX, 16)
+
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(8)
+    doc.setTextColor(...C.caramel)
+    doc.text('Bakery · Coffee Shop · Deli  |  Wakkerstroom, Mpumalanga', textX, 23)
+
+    doc.setFontSize(7)
+    doc.setTextColor(160, 135, 112)
+    const genDate = new Date().toLocaleDateString('en-ZA', { day: 'numeric', month: 'long', year: 'numeric' })
+    doc.text(`Generated ${genDate}`, textX, 30)
+
+    // "INCOME STATEMENT" — right-aligned
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(15)
+    doc.setTextColor(...C.cream)
+    doc.text('INCOME STATEMENT', colRight, 16, { align: 'right' })
+
+    doc.setFont('helvetica', 'normal')
+    doc.setFontSize(9)
+    doc.setTextColor(...C.caramel)
+    const periodLabel = `${range.from} to ${range.to}${is.monthsInPeriod > 1 ? `  (${is.monthsInPeriod} months)` : ''}`
+    doc.text(periodLabel, colRight, 24, { align: 'right' })
+
+    // ── Two-column table ─────────────────────────────────────────────────────
+    let y = HEADER_H + 12          // start below header + accent
+    const rH  = 7                  // normal row height
+    const sH  = 6                  // sub-row height
+    const hH  = 7                  // section-header band height
+    const gap = 2.5                // spacer height
+    const bodyW = PW - ML - MR
+    const indentX = ML + 7
+
+    for (const row of rows) {
+
+      if (row.type === 'spacer') { y += gap; continue }
+
+      if (row.type === 'header') {
+        y += 1
+        doc.setFillColor(...C.strip)
+        doc.rect(ML, y - 5, bodyW, hH, 'F')
+        doc.setDrawColor(...C.border)
+        doc.setLineWidth(0.25)
+        doc.rect(ML, y - 5, bodyW, hH, 'S')
+
+        doc.setFont('helvetica', 'bold')
+        doc.setFontSize(7.5)
+        doc.setTextColor(...C.muted)
+        // Replace en-dash with hyphen so every PDF renderer handles it
+        doc.text(row.label.replace(/–/g, '-').toUpperCase(), ML + 3, y)
+        y += hH - 1
+        continue
+      }
+
+      if (row.type === 'subtotal') {
+        doc.setDrawColor(...C.border)
+        doc.setLineWidth(0.35)
+        doc.line(ML, y - 2.5, colRight, y - 2.5)
+
+        doc.setFillColor(240, 233, 222)
+        doc.rect(ML, y - 5, bodyW, rH, 'F')
+
+        doc.setFont('helvetica', 'bold')
+        doc.setFontSize(9.5)
+        doc.setTextColor(...C.coffee)
+        doc.text(row.label, ML + 3, y)
+
+        const col: RGB = row.positive === true ? C.green : row.positive === false ? C.red : C.coffee
+        doc.setTextColor(...col)
+        doc.text(ZAR_pl(row.value), colRight, y, { align: 'right' })
+        y += rH + 1.5
+        continue
+      }
+
+      if (row.type === 'total') {
+        y += 1
+        doc.setFillColor(...C.coffee)
+        doc.rect(ML, y - 5.5, bodyW, rH + 3, 'F')
+
+        doc.setFont('helvetica', 'bold')
+        doc.setFontSize(12)
+        doc.setTextColor(...C.white)
+        doc.text(row.label, ML + 3, y)
+
+        const col: RGB = row.positive === true ? C.cream : C.caramel
+        doc.setTextColor(...col)
+        doc.text(ZAR_pl(row.value), colRight, y, { align: 'right' })
+        y += rH + 5
+        continue
+      }
+
+      // ── Regular / indent / sub row
+      const isSub    = !!(row as any).sub
+      const isIndent = !!(row as any).indent
+      const isBold   = !!(row as any).bold
+      const h = isSub ? sH : rH
+
+      if (isSub) {
+        doc.setFillColor(252, 249, 245)
+        doc.rect(ML, y - 4.5, bodyW, h, 'F')
+      }
+
+      doc.setFont('helvetica', isBold ? 'bold' : 'normal')
+      doc.setFontSize(isSub ? 8 : 9.5)
+      doc.setTextColor(...(isIndent ? C.muted : C.coffee))
+      doc.text((row as any).label, isIndent ? indentX : ML + 3, y)
+
+      const val = (row as any).value as number
+      doc.setFont('helvetica', isBold ? 'bold' : 'normal')
+      doc.setFontSize(isSub ? 8 : 9.5)
+      doc.setTextColor(...(isBold ? C.coffee : C.muted))
+      doc.text(ZAR_pl(val), colRight, y, { align: 'right' })
+
+      // Divider
+      doc.setDrawColor(...C.border)
+      doc.setLineWidth(0.12)
+      doc.line(ML, y + 1.8, colRight, y + 1.8)
+
+      y += h
+    }
+
+    // ── Footer ───────────────────────────────────────────────────────────────
+    const pageCount = (doc as any).internal.getNumberOfPages()
+    for (let p = 1; p <= pageCount; p++) {
+      doc.setPage(p)
+      doc.setFillColor(...C.coffee)
+      doc.rect(0, PH - 14, PW, 14, 'F')
+      doc.setFillColor(...C.caramel)
+      doc.rect(0, PH - 14, PW, 2, 'F')
+
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(7.5)
+      doc.setTextColor(...C.caramel)
+      doc.text('Village Bakery  ·  Confidential', ML, PH - 6)
+
+      doc.setTextColor(160, 135, 112)
+      doc.text(`Page ${p} of ${pageCount}`, colRight, PH - 6, { align: 'right' })
+    }
+
+    const filename = `VillageBakery_IncomeStatement_${range.from.slice(0, 7)}_to_${range.to.slice(0, 7)}.pdf`
+    doc.save(filename)
+  }
 
   // ── Asset form state ──────────────────────────────────────────────────────
   const EMPTY_ASSET = {
@@ -1815,11 +2012,20 @@ function PLTab({
     { type: 'header', label: 'INCOME' },
     { type: 'row',    label: 'Sales (Z-Print excl. VAT)', value: is.sales, bold: true },
     { type: 'spacer' },
-    { type: 'header', label: 'COST OF SALES' },
-    { type: 'row',    label: 'COS – Food (Op + Purchases − Cl)', value: is.cosFood, indent: true },
-    { type: 'row',    label: 'COS – Retail (Op + Purchases − Cl)', value: is.cosRetail, indent: true },
+    { type: 'header', label: 'COST OF SALES – RETAIL' },
+    { type: 'row',    label: 'Opening Stock Value',   value: is.retailOpStock,    indent: true, sub: true },
+    { type: 'row',    label: 'Plus: Purchases',       value: is.retailPurchases,  indent: true, sub: true },
+    { type: 'row',    label: 'Less: Closing Stock',   value: -is.retailClStock,   indent: true, sub: true },
+    { type: 'subtotal', label: 'COS – Retail', value: is.cosRetail },
+    { type: 'spacer' },
+    { type: 'header', label: 'COST OF SALES – FOOD' },
+    { type: 'row',    label: 'Opening Stock Value',   value: is.foodOpStock,      indent: true, sub: true },
+    { type: 'row',    label: 'Plus: Purchases',       value: is.foodPurchases,    indent: true, sub: true },
+    { type: 'row',    label: 'Less: Closing Stock',   value: -is.foodClStock,     indent: true, sub: true },
+    { type: 'subtotal', label: 'COS – Food', value: is.cosFood },
+    { type: 'spacer' },
     ...(is.courierFees > 0 ? [{ type: 'row' as const, label: 'Transport / Courier', value: is.courierFees, indent: true }] : []),
-    { type: 'subtotal', label: 'TOTAL COS', value: is.totalCos },
+    { type: 'subtotal', label: 'TOTAL COS', value: is.totalCos + is.courierFees },
     { type: 'spacer' },
     { type: 'total', label: 'GROSS PROFIT', value: is.grossProfit, positive: is.grossProfit >= 0 },
     { type: 'spacer' },
@@ -1865,9 +2071,18 @@ function PLTab({
 
       {/* P&L statement */}
       <div className="rounded-2xl border bg-card overflow-hidden">
-        <div className="px-5 py-4 border-b bg-muted/30">
-          <h3 className="font-semibold text-sm">Income Statement</h3>
-          <p className="text-xs text-muted-foreground mt-0.5">Village Bakery · {range.from.slice(0, 7)} to {range.to.slice(0, 7)}</p>
+        <div className="px-5 py-4 border-b bg-muted/30 flex items-center justify-between gap-3">
+          <div>
+            <h3 className="font-semibold text-sm">Income Statement</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">Village Bakery · {range.from.slice(0, 7)} to {range.to.slice(0, 7)}</p>
+          </div>
+          <button
+            onClick={() => void exportPDF()}
+            className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all border border-[#5C3D2E]/20 bg-[#5C3D2E]/5 text-[#5C3D2E] hover:bg-[#5C3D2E] hover:text-white hover:border-[#5C3D2E]"
+          >
+            <FileDown className="w-3.5 h-3.5" />
+            Export PDF
+          </button>
         </div>
         <table className="w-full text-sm">
           <tbody>
@@ -2140,7 +2355,9 @@ function PLTab({
             </div>
           </div>
         </div>
+        
       )}
     </div>
+    
   )
 }

@@ -38,7 +38,7 @@ function SheetsPageInner() {
     <main className="min-h-screen bg-background">
       <Header />
 
-      <div className="max-w-7xl mx-auto px-4 lg:px-8 pt-6 pb-12">
+      <div className="max-w-[95vw] mx-auto px-4 lg:px-8 pt-6 pb-12">
 
         <div className="mb-6">
           <h2 className="font-serif text-2xl font-bold text-foreground">Daily Cash Up</h2>

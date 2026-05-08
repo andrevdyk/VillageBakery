@@ -896,11 +896,22 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
           return setError(`Missing required columns. Found: ${headers.filter(Boolean).join(', ')}`)
 
         // Build lookup maps — PLU match takes priority over description match
-        const descMap = new Map<string, number>()
-        const pluMap  = new Map<string, number>()
+        // but only when the PLU is unique (shared PLUs across items → skip PLU matching)
+        const descMap    = new Map<string, number>()
+        const pluCount   = new Map<string, number>()  // count how many items share each PLU
+        const pluMapRaw  = new Map<string, number>()  // raw PLU → item_id (before dedup check)
         for (const item of items) {
           descMap.set(item.description.trim().toUpperCase(), item.item_id)
-          if (item.plu) pluMap.set(String(item.plu).trim(), item.item_id)
+          if (item.plu) {
+            const p = String(item.plu).trim()
+            pluCount.set(p, (pluCount.get(p) ?? 0) + 1)
+            pluMapRaw.set(p, item.item_id)
+          }
+        }
+        // Only keep PLUs that belong to exactly one item
+        const pluMap = new Map<string, number>()
+        for (const [p, id] of pluMapRaw) {
+          if ((pluCount.get(p) ?? 0) === 1) pluMap.set(p, id)
         }
 
         const catNames = new Set(catList.map(c => c.name.trim().toUpperCase()))
@@ -1343,6 +1354,19 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
                       </div>
                     </div>
 
+                    {/* Duplicate warning banner */}
+                    {(() => {
+                      const idCount = new Map<number, number>()
+                      for (const r of rows) idCount.set(r.item_id, (idCount.get(r.item_id) ?? 0) + 1)
+                      const dupCount = Array.from(idCount.values()).filter(n => n > 1).length
+                      return dupCount > 0 ? (
+                        <div className="flex items-start gap-2 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-xs text-orange-800">
+                          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-orange-500" />
+                          <span><strong>{dupCount} item{dupCount > 1 ? 's' : ''}</strong> appear more than once (highlighted in orange). The last row for each will be saved — delete the duplicates you don't want to keep.</span>
+                        </div>
+                      ) : null
+                    })()}
+
                     <div className="rounded-xl border ">
                       <div className="px-3 py-2 bg-muted/50 border-b">
                         <p className="text-xs font-semibold">Review & Edit Item</p>
@@ -1366,7 +1390,13 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {rows.map((row, i) => {
+                            {(() => {
+                              // Build duplicate set once for all rows
+                              const idCount = new Map<number, number>()
+                              for (const r of rows) idCount.set(r.item_id, (idCount.get(r.item_id) ?? 0) + 1)
+                              const dupIds = new Set(Array.from(idCount.entries()).filter(([, n]) => n > 1).map(([id]) => id))
+                              return rows.map((row, i) => {
+                              const isDup = dupIds.has(row.item_id)
                               // Prefer the cost extracted from Excel (costUpdateMap) over the stored Supabase value
                               const excelCost    = costUpdateMap.get(row.item_id) ?? null
                               const storedCost   = priceMap.get(row.item_id)?.unit_cost ?? 0
@@ -1376,9 +1406,14 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
                               const clValue = (row.closing_stock  ?? 0) * effectiveCost
                               return (
                               <TableRow key={i}
-                                className={`group cursor-pointer ${highlightedRawRow === row._rawRowIdx ? 'bg-yellow-50' : ''}`}
+                                className={`group cursor-pointer ${isDup ? 'bg-orange-50 hover:bg-orange-100' : highlightedRawRow === row._rawRowIdx ? 'bg-yellow-50' : ''}`}
                                 onClick={() => setHighlightedRawRow(row._rawRowIdx)}>
-                                <TableCell className="text-xs font-medium truncate max-w-[160px] py-1" title={row._description}>{row._description}</TableCell>
+                                <TableCell className="text-xs font-medium truncate max-w-[160px] py-1" title={row._description}>
+                                  <div className="flex items-center gap-1.5">
+                                    {isDup && <AlertTriangle className="w-3 h-3 text-orange-500 shrink-0" />}
+                                    <span className={isDup ? 'text-orange-800' : ''}>{row._description}</span>
+                                  </div>
+                                </TableCell>
                                 <TableCell className="text-xs text-muted-foreground py-1 truncate max-w-[100px]">{idToCategory.get(row.item_id) ?? row._addedCategory ?? '—'}</TableCell>
                                 {/* Cost cell: show Excel cost; if it differs from stored, strike through old value */}
                                 <TableCell className="text-right text-xs tabular-nums py-1">
@@ -1406,7 +1441,8 @@ function ExcelUploadModal({ open, onClose, items, onSave, countDate, mode, categ
                                 </TableCell>
                               </TableRow>
                             )
-                            })}
+                            })
+                            })()}
 
                           </TableBody>
                         </Table>
@@ -2177,8 +2213,18 @@ export function StockTab() {
   useEffect(() => { fetchFoodCounts(foodMonth) },     [foodMonth])
 
   async function saveRetailCount(rows: any[], date?: string) {
-    await supabase.from('vb_retail_stock_count').upsert(rows, { onConflict: 'item_id,count_date' })
     const target = date ?? retailMonth
+    const countDate = rows[0]?.count_date ?? target
+    // Deduplicate by item_id (keep last occurrence — covers Add-to-Review duplicates)
+    const seen = new Map<number, any>()
+    for (const r of rows) seen.set(r.item_id, r)
+    const clean = Array.from(seen.values())
+    // Delete existing counts for this date, then insert fresh
+    await supabase.from('vb_retail_stock_count').delete().eq('count_date', countDate)
+    if (clean.length > 0) {
+      const { error } = await supabase.from('vb_retail_stock_count').insert(clean)
+      if (error) throw new Error(error.message)
+    }
     if (date && date !== retailMonth) setRetailMonth(date)
     await fetchRetailCounts(target)
   }
@@ -2191,8 +2237,18 @@ export function StockTab() {
     await supabase.from('vb_retail_stock_item').delete().eq('item_id', id); await fetchRetail()
   }
   async function saveFoodCount(rows: any[], date?: string) {
-    await supabase.from('vb_food_stock_count').upsert(rows, { onConflict: 'item_id,count_date' })
     const target = date ?? foodMonth
+    const countDate = rows[0]?.count_date ?? target
+    // Deduplicate by item_id (keep last occurrence)
+    const seen = new Map<number, any>()
+    for (const r of rows) seen.set(r.item_id, r)
+    const clean = Array.from(seen.values())
+    // Delete existing counts for this date, then insert fresh
+    await supabase.from('vb_food_stock_count').delete().eq('count_date', countDate)
+    if (clean.length > 0) {
+      const { error } = await supabase.from('vb_food_stock_count').insert(clean)
+      if (error) throw new Error(error.message)
+    }
     if (date && date !== foodMonth) setFoodMonth(date)
     await fetchFoodCounts(target)
   }

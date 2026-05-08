@@ -1566,12 +1566,13 @@ function MarkPaidModal({
 }
 
 // ─── Filter Sheet (mobile) ─────────────────────────────────────────────────────
-function FilterSheet({ open, onClose, suppliers, filterMonth, setFilterMonth, filterYear, setFilterYear, filterFY, setFilterFY, filterSupplier, setFilterSupplier, filterVat, setFilterVat, filterPaid, setFilterPaid, onClear, hasActiveFilters, yearOptions, fyOptions }: {
+function FilterSheet({ open, onClose, suppliers, filterMonth, setFilterMonth, filterYear, setFilterYear, filterFY, setFilterFY, filterSupplier, setFilterSupplier, filterCategory, setFilterCategory, filterVat, setFilterVat, filterPaid, setFilterPaid, onClear, hasActiveFilters, yearOptions, fyOptions }: {
   open: boolean; onClose: () => void; suppliers: Supplier[]
   filterMonth: string; setFilterMonth: (v: string) => void
   filterYear: string; setFilterYear: (v: string) => void
   filterFY: string; setFilterFY: (v: string) => void
   filterSupplier: string; setFilterSupplier: (v: string) => void
+  filterCategory: string; setFilterCategory: (v: string) => void
   filterVat: string; setFilterVat: (v: string) => void
   filterPaid: string; setFilterPaid: (v: string) => void
   onClear: () => void; hasActiveFilters: boolean
@@ -1587,6 +1588,7 @@ function FilterSheet({ open, onClose, suppliers, filterMonth, setFilterMonth, fi
             { label: 'Month', value: filterMonth, onChange: (v: string) => { setFilterFY('all'); setFilterMonth(v) }, options: [{ value: 'all', label: 'All months' }, ...MONTHS.map(m => ({ value: m, label: m }))] },
             { label: 'Financial year', value: filterFY, onChange: (v: string) => { setFilterMonth('all'); setFilterFY(v) }, options: [{ value: 'all', label: 'All fin. years' }, ...fyOptions.map(fy => ({ value: fy, label: `FY ${fy}` }))] },
             { label: 'Supplier', value: filterSupplier, onChange: setFilterSupplier, options: [{ value: 'all', label: 'All suppliers' }, ...suppliers.map(s => ({ value: String(s.supplier_id), label: s.company_name }))] },
+            { label: 'Category', value: filterCategory, onChange: setFilterCategory, options: [{ value: 'all', label: 'All categories' }, ...EXPENSE_CATEGORIES.map(c => ({ value: c, label: c }))] },
             { label: 'VAT status', value: filterVat, onChange: setFilterVat, options: [{ value: 'all', label: 'All (VAT)' }, { value: 'vat', label: 'VAT rated' }, { value: 'no-vat', label: 'Zero rated' }] },
             { label: 'Payment status', value: filterPaid, onChange: setFilterPaid, options: [{ value: 'all', label: 'All' }, { value: 'paid', label: 'Paid' }, { value: 'unpaid', label: 'Unpaid' }] },
           ].map(({ label, value, onChange, options }) => (
@@ -1905,6 +1907,7 @@ export default function ExpensesPage() {
   const [filterSupplier, setFilterSupplier]         = useState<string>('all')
   const [filterVat, setFilterVat]                   = useState<string>('all')
   const [filterPaid, setFilterPaid]                 = useState<string>('all')
+  const [filterCategory, setFilterCategory]         = useState<string>('all')
   const [filterDescription, setFilterDescription]   = useState<string>('')
 
   const [showUpload, setShowUpload]   = useState(false)
@@ -1940,9 +1943,10 @@ export default function ExpensesPage() {
     if (filterSupplier !== 'all') q = q.eq('supplier_id', Number(filterSupplier))
     if (filterVat === 'vat')      q = q.eq('vat_rated', true)
     if (filterVat === 'no-vat')   q = q.eq('vat_rated', false)
-    if (filterPaid === 'paid')    q = q.not('date_paid', 'is', null)
-    if (filterPaid === 'unpaid')  q = q.is('date_paid', null)
-    if (filterDescription.trim()) q = q.ilike('product_description', `%${filterDescription.trim()}%`)
+    if (filterPaid === 'paid')      q = q.not('date_paid', 'is', null)
+    if (filterPaid === 'unpaid')    q = q.is('date_paid', null)
+    if (filterCategory !== 'all')  q = q.eq('category', filterCategory)
+    if (filterDescription.trim())  q = q.ilike('product_description', `%${filterDescription.trim()}%`)
     return q
   }
 
@@ -1958,14 +1962,14 @@ export default function ExpensesPage() {
     setExpenses((data as unknown as Expense[]) ?? [])
     setTotal(count ?? 0)
     setLoading(false)
-  }, [page, filterMonth, filterYear, filterFY, filterSupplier, filterVat, filterPaid, filterDescription])
+  }, [page, filterMonth, filterYear, filterFY, filterSupplier, filterVat, filterPaid, filterCategory, filterDescription])
 
   const fetchAll = useCallback(async () => {
     let q = supabase.from('vb_expense').select('supplier_id, invoice_date, amount_excl_vat, vat_rated, vat_amount, amount_incl_vat, date_paid, vb_supplier(company_name)')
     q = applyFilters(q)
     const { data } = await q
     setAllExpenses((data as unknown as AnalyticsExpense[]) ?? [])
-  }, [filterMonth, filterYear, filterFY, filterSupplier, filterVat, filterPaid, filterDescription])
+  }, [filterMonth, filterYear, filterFY, filterSupplier, filterVat, filterPaid, filterCategory, filterDescription])
 
   const [summary, setSummary] = useState({ excl: 0, vat: 0, incl: 0, unpaid: 0 })
   const fetchSummary = useCallback(async () => {
@@ -1979,9 +1983,9 @@ export default function ExpensesPage() {
       incl:   data.reduce((s, r) => s + Number(r.amount_incl_vat), 0),
       unpaid: data.filter(r => !r.date_paid).reduce((s, r) => s + Number(r.amount_incl_vat), 0),
     })
-  }, [filterMonth, filterYear, filterFY, filterSupplier, filterVat, filterPaid, filterDescription])
+  }, [filterMonth, filterYear, filterFY, filterSupplier, filterVat, filterPaid, filterCategory, filterDescription])
 
-  useEffect(() => { setPage(1) }, [filterMonth, filterYear, filterFY, filterSupplier, filterVat, filterPaid, filterDescription])
+  useEffect(() => { setPage(1) }, [filterMonth, filterYear, filterFY, filterSupplier, filterVat, filterPaid, filterCategory, filterDescription])
   useEffect(() => { fetchExpenses() }, [fetchExpenses])
   useEffect(() => { fetchAll() },      [fetchAll])
   useEffect(() => { fetchSummary() },  [fetchSummary])
@@ -2009,15 +2013,16 @@ export default function ExpensesPage() {
   }
 
   const totalPages       = Math.max(1, Math.ceil(total / PAGE_SIZE))
-  const clearFilters     = () => { setFilterMonth('all'); setFilterYear(String(now.getFullYear())); setFilterFY('all'); setFilterSupplier('all'); setFilterVat('all'); setFilterPaid('all'); setFilterDescription('') }
-  const hasActiveFilters = filterMonth !== 'all' || filterFY !== 'all' || filterSupplier !== 'all' || filterVat !== 'all' || filterPaid !== 'all' || !!filterDescription.trim()
-  const activeFilterCount = [filterMonth !== 'all', filterFY !== 'all', filterSupplier !== 'all', filterVat !== 'all', filterPaid !== 'all', !!filterDescription.trim()].filter(Boolean).length
+  const clearFilters     = () => { setFilterMonth('all'); setFilterYear(String(now.getFullYear())); setFilterFY('all'); setFilterSupplier('all'); setFilterVat('all'); setFilterPaid('all'); setFilterCategory('all'); setFilterDescription('') }
+  const hasActiveFilters = filterMonth !== 'all' || filterFY !== 'all' || filterSupplier !== 'all' || filterVat !== 'all' || filterPaid !== 'all' || filterCategory !== 'all' || !!filterDescription.trim()
+  const activeFilterCount = [filterMonth !== 'all', filterFY !== 'all', filterSupplier !== 'all', filterVat !== 'all', filterPaid !== 'all', filterCategory !== 'all', !!filterDescription.trim()].filter(Boolean).length
 
   const desktopFilters = [
     { value: filterYear,     onChange: (v: string) => { setFilterFY('all'); setFilterYear(v) },     w: 'w-28', placeholder: 'Year',      opts: [{ v: 'all', l: 'All years' },     ...yearOptions.map(y  => ({ v: y,          l: y }))] },
     { value: filterMonth,    onChange: (v: string) => { setFilterFY('all'); setFilterMonth(v) },    w: 'w-32', placeholder: 'Month',     opts: [{ v: 'all', l: 'All months' },    ...MONTHS.map(m       => ({ v: m,          l: m }))] },
     { value: filterFY,       onChange: (v: string) => { setFilterMonth('all'); setFilterFY(v) },    w: 'w-36', placeholder: 'Fin. year', opts: [{ v: 'all', l: 'All fin. years' }, ...fyOptions.map(fy  => ({ v: fy,         l: `FY ${fy}` }))] },
     { value: filterSupplier, onChange: setFilterSupplier,                                           w: 'w-44', placeholder: 'Supplier',  opts: [{ v: 'all', l: 'All suppliers' }, ...suppliers.map(s   => ({ v: String(s.supplier_id), l: s.company_name }))] },
+    { value: filterCategory, onChange: setFilterCategory,                                           w: 'w-44', placeholder: 'Category',  opts: [{ v: 'all', l: 'All categories' }, ...EXPENSE_CATEGORIES.map(c => ({ v: c, l: c }))] },
     { value: filterVat,      onChange: setFilterVat,                                                w: 'w-32', placeholder: 'VAT',       opts: [{ v: 'all', l: 'All (VAT)' }, { v: 'vat', l: 'VAT rated' }, { v: 'no-vat', l: 'Zero rated' }] },
     { value: filterPaid,     onChange: setFilterPaid,                                               w: 'w-32', placeholder: 'Payment',   opts: [{ v: 'all', l: 'All' }, { v: 'paid', l: 'Paid' }, { v: 'unpaid', l: 'Unpaid' }] },
   ]
@@ -2237,13 +2242,14 @@ export default function ExpensesPage() {
       />
       <FilterSheet
         open={showFilters} onClose={() => setShowFilters(false)} suppliers={suppliers}
-        filterMonth={filterMonth}       setFilterMonth={setFilterMonth}
-        filterYear={filterYear}         setFilterYear={setFilterYear}
-        filterFY={filterFY}             setFilterFY={setFilterFY}
-        filterSupplier={filterSupplier} setFilterSupplier={setFilterSupplier}
-        filterVat={filterVat}           setFilterVat={setFilterVat}
-        filterPaid={filterPaid}         setFilterPaid={setFilterPaid}
-        onClear={clearFilters}          hasActiveFilters={hasActiveFilters}
+        filterMonth={filterMonth}         setFilterMonth={setFilterMonth}
+        filterYear={filterYear}           setFilterYear={setFilterYear}
+        filterFY={filterFY}               setFilterFY={setFilterFY}
+        filterSupplier={filterSupplier}   setFilterSupplier={setFilterSupplier}
+        filterCategory={filterCategory}   setFilterCategory={setFilterCategory}
+        filterVat={filterVat}             setFilterVat={setFilterVat}
+        filterPaid={filterPaid}           setFilterPaid={setFilterPaid}
+        onClear={clearFilters}            hasActiveFilters={hasActiveFilters}
         yearOptions={yearOptions}       fyOptions={fyOptions}
       />
     </div>
