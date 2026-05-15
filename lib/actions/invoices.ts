@@ -54,6 +54,17 @@ export async function deleteInvoice(id: string) {
   return { success: true }
 }
 
+export async function updateCashUpSheet(id: string, data: Partial<ExtractedCashUpData>) {
+  const supabase = await createClient()
+  const { error } = await supabase
+    .from('cash_up_sheets')
+    .update(data)
+    .eq('id', id)
+  if (error) return { error: error.message }
+  revalidatePath('/sheets')
+  return { success: true }
+}
+
 export { saveInvoice as saveCashUpSheet }
 export { getInvoices as getCashUpSheets }
 export { getInvoice as getCashUpSheet }

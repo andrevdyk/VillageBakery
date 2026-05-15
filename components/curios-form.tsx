@@ -407,7 +407,7 @@ export function CuriosForm({ data, sellers, onSave, isSaving }: CuriosFormProps)
                       <span className="font-semibold">{R(c.total_sales)}</span>
                     </div>
                     <div className="flex justify-between text-xs">
-                      <span className="text-muted-foreground">Village Bakery Keeps</span>
+                      <span className="text-muted-foreground">Commission</span>
                       <span className="font-semibold text-primary">{R(c.bakery_keeps)}</span>
                     </div>
                     <div className="flex justify-between text-xs">
@@ -429,7 +429,7 @@ export function CuriosForm({ data, sellers, onSave, isSaving }: CuriosFormProps)
                   <span className="text-sm font-bold text-destructive">{R(totalSellerPayout)}</span>
                 </div>
                 <div className="flex justify-between py-2.5 px-3 bg-primary/8 rounded-lg border border-primary/20">
-                  <span className="text-xs font-semibold text-foreground">Village Bakery Keeps</span>
+                  <span className="text-xs font-semibold text-foreground">Commission</span>
                   <span className="text-sm font-bold text-primary">{R(totalBakeryKeeps)}</span>
                 </div>
               </section>

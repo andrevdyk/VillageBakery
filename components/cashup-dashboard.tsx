@@ -18,6 +18,7 @@ import type { CashUpSheet } from '@/lib/schema'
 import { calcSheet } from '@/lib/calc'
 import { SheetsExportButton } from '@/components/sheets-export-button'
 import { InvoiceCard } from '@/components/invoice-card'
+import { CashUpTable } from '@/components/cashup-table'
 
 // ─── Bakery brand colours (resolved in JS so Recharts can use them) ────────────
 const BRAND = {
@@ -167,7 +168,10 @@ interface Filters {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
+type DashTab = 'analytics' | 'table'
+
 export function CashUpDashboard({ sheets }: { sheets: CashUpSheet[] }) {
+  const [dashTab, setDashTab] = useState<DashTab>('analytics')
   const [view,    setView]    = useState<'weekly' | 'monthly'>('monthly')
   const [showAll, setShowAll] = useState(false)
 
@@ -311,6 +315,26 @@ export function CashUpDashboard({ sheets }: { sheets: CashUpSheet[] }) {
   return (
     <div className="space-y-6">
 
+      {/* ── Sub-tabs ── */}
+      <div className="flex gap-1 bg-muted rounded-xl p-1 max-w-xs">
+        {([
+          { id: 'analytics', label: 'Analytics' },
+          { id: 'table',     label: 'Daily Table' },
+        ] as { id: DashTab; label: string }[]).map(({ id, label }) => (
+          <button
+            key={id}
+            onClick={() => setDashTab(id)}
+            className={`flex-1 py-2 px-4 rounded-lg text-sm font-semibold transition-all ${
+              dashTab === id
+                ? 'bg-card shadow-sm text-foreground border border-border/60'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       {/* ── Filter Bar ── */}
       <div className="flex flex-wrap items-center gap-2">
         {/* Mode pills */}
@@ -371,6 +395,14 @@ export function CashUpDashboard({ sheets }: { sheets: CashUpSheet[] }) {
           {filteredLabel} · {filteredSheets.length} sheets
         </span>
       </div>
+
+      {/* ── Daily Table ── */}
+      {dashTab === 'table' && (
+        <CashUpTable sheets={filteredSheets} />
+      )}
+
+      {/* ── Analytics ── */}
+      {dashTab === 'analytics' && <>
 
       {/* ── KPI Cards ── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -546,6 +578,8 @@ export function CashUpDashboard({ sheets }: { sheets: CashUpSheet[] }) {
           </div>
         )}
       </section>
+
+      </>}
 
     </div>
   )

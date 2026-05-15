@@ -115,6 +115,27 @@ export function InvoiceScanner() {
     }
   }
 
+  const handleManualEntry = () => {
+    const blank: ExtractedCashUpData = {
+      sheet_date: null,
+      total_cash: null,
+      slips_paid_out: [],
+      credit_card_yoco: null,
+      charged_sales_accounts: null,
+      till_total_z_print: null,
+      curios_sales: [],
+      notes: null,
+      image_url: previewUrl,
+      raw_text: null,
+      new_bb_sold: null,
+      old_bb_sold: null,
+      new_bb_price: 22,
+      old_bb_price: 12,
+    }
+    setExtractedData(blank)
+    setStep('review')
+  }
+
   const handleReset = () => {
     setStep('capture')
     setCapturedFile(null)
@@ -192,6 +213,15 @@ export function InvoiceScanner() {
             </Button>
           )}
 
+          {step !== 'extracting' && (
+            <button
+              onClick={handleManualEntry}
+              className="w-full py-3 text-sm font-semibold text-muted-foreground hover:text-foreground border border-border rounded-xl transition-colors"
+            >
+              Enter Manually
+            </button>
+          )}
+
           {step === 'extracting' && (
             <div className="bg-card border border-border rounded-xl p-6 flex flex-col items-center gap-3">
               <div className="relative">
@@ -224,7 +254,7 @@ export function InvoiceScanner() {
               onClick={handleReset}
               className="text-xs text-accent underline underline-offset-2 flex-shrink-0 mt-1"
             >
-              Rescan
+              {capturedFile ? 'Rescan' : 'Start Over'}
             </button>
           </div>
 

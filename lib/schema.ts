@@ -82,6 +82,10 @@ export interface CashUpSheet {
   notes: string | null
   image_url: string | null
   raw_text: string | null
+  new_bb_sold: number | null
+  old_bb_sold: number | null
+  new_bb_price: number | null
+  old_bb_price: number | null
 }
 
 export type ExtractedCashUpData = Omit<CashUpSheet, 'id' | 'created_at'>

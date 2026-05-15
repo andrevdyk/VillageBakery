@@ -23,7 +23,11 @@ const toNum = (val: string): number | null => {
 const R = (val: number) => `R${val.toFixed(2)}`
 
 export function CashUpForm({ data, onSave, isSaving }: CashUpFormProps) {
-  const [form, setForm] = useState<ExtractedCashUpData>(data)
+  const [form, setForm] = useState<ExtractedCashUpData>({
+    ...data,
+    new_bb_price: data.new_bb_price ?? 22,
+    old_bb_price: data.old_bb_price ?? 12,
+  })
 
   const set = <K extends keyof ExtractedCashUpData>(key: K, val: ExtractedCashUpData[K]) =>
     setForm((prev) => ({ ...prev, [key]: val }))
@@ -215,6 +219,82 @@ export function CashUpForm({ data, onSave, isSaving }: CashUpFormProps) {
             negative={calc.variance < 0}
           />
         </div>
+      </section>
+
+      {/* Brown Bread */}
+      <section className="bg-card rounded-xl border border-border p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <SectionHead title="Brown Bread (Non-Vatable)" />
+        </div>
+        <div className="space-y-3">
+          {/* New BB */}
+          <div>
+            <Label className="text-xs text-muted-foreground mb-1 block">New Brown Bread</Label>
+            <div className="flex items-center gap-2">
+              <Input
+                type="number"
+                min="0"
+                step="1"
+                value={form.new_bb_sold ?? ''}
+                onChange={(e) => set('new_bb_sold', e.target.value === '' ? null : parseInt(e.target.value, 10))}
+                placeholder="Qty"
+                className="w-20 bg-background border-border text-right font-semibold"
+              />
+              <span className="text-xs text-muted-foreground">×</span>
+              <div className="relative flex-1">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">R</span>
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={form.new_bb_price ?? 22}
+                  onChange={(e) => set('new_bb_price', toNum(e.target.value) ?? 22)}
+                  className="pl-6 bg-background border-border text-right"
+                />
+              </div>
+              <span className="text-sm font-semibold text-foreground w-20 text-right">
+                {R((form.new_bb_sold ?? 0) * (form.new_bb_price ?? 22))}
+              </span>
+            </div>
+          </div>
+          {/* Old BB */}
+          <div>
+            <Label className="text-xs text-muted-foreground mb-1 block">Old Brown Bread</Label>
+            <div className="flex items-center gap-2">
+              <Input
+                type="number"
+                min="0"
+                step="1"
+                value={form.old_bb_sold ?? ''}
+                onChange={(e) => set('old_bb_sold', e.target.value === '' ? null : parseInt(e.target.value, 10))}
+                placeholder="Qty"
+                className="w-20 bg-background border-border text-right font-semibold"
+              />
+              <span className="text-xs text-muted-foreground">×</span>
+              <div className="relative flex-1">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">R</span>
+                <Input
+                  type="number"
+                  step="0.01"
+                  value={form.old_bb_price ?? 12}
+                  onChange={(e) => set('old_bb_price', toNum(e.target.value) ?? 12)}
+                  className="pl-6 bg-background border-border text-right"
+                />
+              </div>
+              <span className="text-sm font-semibold text-foreground w-20 text-right">
+                {R((form.old_bb_sold ?? 0) * (form.old_bb_price ?? 12))}
+              </span>
+            </div>
+          </div>
+        </div>
+        {((form.new_bb_sold ?? 0) + (form.old_bb_sold ?? 0)) > 0 && (
+          <div className="pt-1">
+            <CalcRow
+              label="Total Brown Bread Revenue (non-vatable)"
+              value={(form.new_bb_sold ?? 0) * (form.new_bb_price ?? 22) + (form.old_bb_sold ?? 0) * (form.old_bb_price ?? 12)}
+              highlight
+            />
+          </div>
+        )}
       </section>
 
       {/* Notes */}

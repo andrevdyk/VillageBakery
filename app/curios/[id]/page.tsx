@@ -206,7 +206,7 @@ export default async function CuriosDetailPage({ params }: { params: Promise<{ i
                     <span className="font-semibold text-destructive">{R(c.seller_payout)}</span>
                   </div>
                   <div className="flex justify-between text-xs">
-                    <span className="text-muted-foreground">Village Bakery Keeps</span>
+                    <span className="text-muted-foreground">Commission</span>
                     <span className="font-semibold text-primary">{R(c.bakery_keeps)}</span>
                   </div>
                 </div>

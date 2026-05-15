@@ -704,16 +704,12 @@ export default function BusinessDashboard() {
 
     const grossProfit = sales - totalCos - transportFees - courierFees
 
-    // Wages — regular employees (monthly payslips, nett + PAYE + UIF)
-    const regularPayslips = filteredPayslips.filter(p => p.payslip_type === 'monthly' || p.pay_type === 'monthly')
-    const wages = regularPayslips.reduce((s, p) =>
+    // Wages (regular employees) — ALL payslips from the employees tab (nett + PAYE + UIF)
+    const wages = filteredPayslips.reduce((s, p) =>
       s + Number(p.nett_pay ?? 0) + Number(p.paye ?? 0) + Number(p.uif_employee ?? 0) + Number(p.uif_employer ?? 0), 0)
 
-    // Casual wages — from payslips (hourly/daily/casual) + any expense lines tagged CASUAL WAGES
-    const casualPayslips = filteredPayslips.filter(p => p.payslip_type !== 'monthly' && p.pay_type !== 'monthly')
-    const casualWagesPayslip = casualPayslips.reduce((s, p) => s + Number(p.nett_pay ?? 0), 0)
-    const casualWagesExpense = expCat('CASUAL WAGES')
-    const casualWages = casualWagesPayslip + casualWagesExpense
+    // Casual wages — ONLY expenses tagged "Casual Wages" (waiter wages); NOT from payslips
+    const casualWages = expCat('CASUAL WAGES')
 
     const grossAfterWages = grossProfit - wages - casualWages
 

@@ -21,7 +21,7 @@ export function SheetsExportButton({ sheets }: { sheets: CashUpSheet[] }) {
       const a = document.createElement('a')
       a.href = url
       const today = new Date().toISOString().split('T')[0]
-      a.download = `village-bakery-cashup-${today}.csv`
+      a.download = `village-bakery-cashup-${today}.xlsx`
       a.click()
       URL.revokeObjectURL(url)
     } catch {

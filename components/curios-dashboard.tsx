@@ -364,7 +364,7 @@ export function CuriosDashboard({ sellers, sheets, payments, onUpdateSheet }: Pr
               <p className="font-bold text-destructive text-sm">{R(overallStats.totalSellerPayout)}</p>
             </div>
             <div className="bg-card rounded-xl border border-border p-3 text-center">
-              <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">Bakery Keeps</p>
+              <p className="text-[10px] uppercase tracking-widest text-muted-foreground mb-1">Comission</p>
               <p className="font-bold text-foreground text-sm">{R(overallStats.totalBakeryKeeps)}</p>
             </div>
           </div>
@@ -377,7 +377,7 @@ export function CuriosDashboard({ sellers, sheets, payments, onUpdateSheet }: Pr
                   <PieChart>
                     <Pie
                       data={[
-                        { name: 'Bakery Keeps', value: overallStats.totalBakeryKeeps },
+                        { name: 'Commission', value: overallStats.totalBakeryKeeps },
                         { name: 'Seller Payouts', value: overallStats.totalSellerPayout },
                       ]}
                       cx="50%" cy="50%"
