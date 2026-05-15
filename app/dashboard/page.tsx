@@ -698,10 +698,11 @@ export default function BusinessDashboard() {
 
     const totalCos = cosRetail + cosFood
 
-    // Courier / delivery
-    const courierFees = expCat('TRANSPORT')
+    // Courier / Transport
+    const transportFees = expCat('TRANSPORT')
+    const courierFees   = expCat('COURIER')
 
-    const grossProfit = sales - totalCos - courierFees
+    const grossProfit = sales - totalCos - transportFees - courierFees
 
     // Wages — regular employees (monthly payslips, nett + PAYE + UIF)
     const regularPayslips = filteredPayslips.filter(p => p.payslip_type === 'monthly' || p.pay_type === 'monthly')
@@ -766,7 +767,7 @@ export default function BusinessDashboard() {
     const profitLoss     = grossAfterWages - totalExpenses
 
     return {
-      sales, cosRetail, cosFood, totalCos, courierFees, grossProfit,
+      sales, cosRetail, cosFood, totalCos, courierFees, transportFees, grossProfit,
       retailOpStock, retailPurchases, retailClStock,
       foodOpStock, foodPurchases, foodClStock,
       wages, casualWages, grossAfterWages,
@@ -1741,7 +1742,7 @@ interface ISData {
   sales: number; cosRetail: number; cosFood: number; totalCos: number
   retailOpStock: number; retailPurchases: number; retailClStock: number
   foodOpStock: number; foodPurchases: number; foodClStock: number
-  courierFees: number; grossProfit: number; wages: number; casualWages: number
+  transportFees: number; courierFees: number; grossProfit: number; wages: number; casualWages: number
   grossAfterWages: number; uifPaye: number
   depreciationByAsset: { description: string; monthly: number; total: number }[]
   totalDepreciation: number
@@ -2024,8 +2025,9 @@ function PLTab({
     { type: 'row',    label: 'Less: Closing Stock',   value: -is.foodClStock,     indent: true, sub: true },
     { type: 'subtotal', label: 'COS – Food', value: is.cosFood },
     { type: 'spacer' },
-    ...(is.courierFees > 0 ? [{ type: 'row' as const, label: 'Transport / Courier', value: is.courierFees, indent: true }] : []),
-    { type: 'subtotal', label: 'TOTAL COS', value: is.totalCos + is.courierFees },
+    ...(is.transportFees > 0 ? [{ type: 'row' as const, label: 'Transport', value: is.transportFees, indent: true }] : []),
+    ...(is.courierFees > 0 ? [{ type: 'row' as const, label: 'Courier', value: is.courierFees, indent: true }] : []),
+    { type: 'subtotal', label: 'TOTAL COS', value: is.totalCos + is.transportFees + is.courierFees },
     { type: 'spacer' },
     { type: 'total', label: 'GROSS PROFIT', value: is.grossProfit, positive: is.grossProfit >= 0 },
     { type: 'spacer' },
