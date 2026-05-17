@@ -72,6 +72,24 @@ interface DepreciationAsset {
   useful_life_months: number
   is_active: boolean
   notes: string | null
+  loan_id: number | null
+}
+
+interface MemberLoan {
+  loan_id: number
+  member_name: string
+  description: string | null
+  loan_amount: number
+  loan_date: string
+  notes: string | null
+}
+
+interface MemberLoanPayment {
+  payment_id: number
+  loan_id: number
+  payment_date: string
+  amount: number
+  notes: string | null
 }
 
 interface RetailCount {
@@ -375,6 +393,18 @@ function VarianceBadge({ variance }: { variance: number }) {
   )
 }
 
+// ─── Month range helper ───────────────────────────────────────────────────────
+function getMonthsInRange(from: string, to: string): string[] {
+  const months: string[] = []
+  const d = new Date(Number(from.slice(0,4)), Number(from.slice(5,7)) - 1, 1)
+  const end = new Date(Number(to.slice(0,4)), Number(to.slice(5,7)) - 1, 28)
+  while (d <= end) {
+    months.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`)
+    d.setMonth(d.getMonth()+1)
+  }
+  return months
+}
+
 // ─── Main Dashboard ───────────────────────────────────────────────────────────
 export default function BusinessDashboard() {
   const supabase = createClient()
@@ -386,6 +416,9 @@ export default function BusinessDashboard() {
   const [payslips,      setPayslips]      = useState<Payslip[]>([])
   const [employees,     setEmployees]     = useState<Employee[]>([])
   const [assets,        setAssets]        = useState<DepreciationAsset[]>([])
+  const [depSkipRecords, setDepSkipRecords] = useState<{asset_id: number; year_month: string}[]>([])
+  const [memberLoans,        setMemberLoans]        = useState<MemberLoan[]>([])
+  const [memberLoanPayments, setMemberLoanPayments] = useState<MemberLoanPayment[]>([])
   const [loading,       setLoading]       = useState(true)
   const [lastRefresh,   setLastRefresh]   = useState(new Date())
 
@@ -406,7 +439,7 @@ export default function BusinessDashboard() {
 
   const fetchAll = useCallback(async () => {
     setLoading(true)
-    const [sheets, exps, counts, foodCountsRes, slips, emps, assetRows] = await Promise.all([
+    const [sheets, exps, counts, foodCountsRes, slips, emps, assetRows, skipRows, loansRes, loanPayRes] = await Promise.all([
       supabase.from('cash_up_sheets').select('*').order('sheet_date', { ascending: false }),
       supabase.from('vb_expense').select('*, vb_supplier(company_name)'),
       supabase.from('vb_retail_stock_count_enriched').select('*'),
@@ -414,6 +447,9 @@ export default function BusinessDashboard() {
       supabase.from('vb_payslip').select('*, vb_employee(full_name)'),
       supabase.from('vb_employee').select('employee_id, full_name, id_number, job_position, is_active'),
       supabase.from('vb_depreciation_asset').select('*').order('purchase_date'),
+      supabase.from('vb_depreciation_skip').select('asset_id, year_month'),
+      supabase.from('vb_member_loan').select('*').order('loan_date'),
+      supabase.from('vb_member_loan_payment').select('*').order('payment_date'),
     ])
     setCashUpSheets((sheets.data as CashUpSheet[]) ?? [])
     setExpenses((exps.data as Expense[]) ?? [])
@@ -422,11 +458,24 @@ export default function BusinessDashboard() {
     setPayslips((slips.data as Payslip[]) ?? [])
     setEmployees((emps.data as Employee[]) ?? [])
     setAssets((assetRows.data as DepreciationAsset[]) ?? [])
+    setDepSkipRecords((skipRows.data ?? []) as {asset_id: number; year_month: string}[])
+    setMemberLoans((loansRes.data as MemberLoan[]) ?? [])
+    setMemberLoanPayments((loanPayRes.data as MemberLoanPayment[]) ?? [])
     setLoading(false)
     setLastRefresh(new Date())
   }, [])
 
   useEffect(() => { fetchAll() }, [fetchAll])
+
+  async function handleDepSkipToggle(assetId: number, month: string, skip: boolean) {
+    if (skip) {
+      await supabase.from('vb_depreciation_skip').insert({ asset_id: assetId, year_month: month })
+    } else {
+      await supabase.from('vb_depreciation_skip').delete()
+        .eq('asset_id', assetId).eq('year_month', month)
+    }
+    await fetchAll()
+  }
 
   const filteredSheets = useMemo(() =>
     cashUpSheets.filter(s => inRange(sheetDate(s).toISOString().split('T')[0], range)),
@@ -717,33 +766,61 @@ export default function BusinessDashboard() {
     const uifPaye = filteredPayslips.reduce((s, p) =>
       s + Number(p.paye ?? 0) + Number(p.uif_employee ?? 0) + Number(p.uif_employer ?? 0), 0)
 
-    // Depreciation: pro-rate assets for the period
+    // Depreciation: pro-rate assets for the period, respecting skipped months (per-asset)
     const fromDate = new Date(range.from)
     const toDate   = new Date(range.to)
-    // Number of months the period spans (at least 1)
-    const monthsInPeriod = Math.max(1,
-      (toDate.getFullYear() - fromDate.getFullYear()) * 12 +
-      (toDate.getMonth() - fromDate.getMonth()) + 1
-    )
+    const allPeriodMonths = getMonthsInRange(range.from, range.to)
+    const monthsInPeriod  = allPeriodMonths.length
+
     const depreciationByAsset = assets
       .filter(a => a.is_active && new Date(a.purchase_date) <= toDate)
       .map(a => {
-        const monthlyDep = (Number(a.purchase_cost) - Number(a.residual_value)) / a.useful_life_months
-        // How many months has this asset been depreciating within our period?
-        const assetStart = new Date(a.purchase_date)
-        const periodStart = assetStart > fromDate ? assetStart : fromDate
-        const periodMonths = Math.max(0,
-          (toDate.getFullYear() - periodStart.getFullYear()) * 12 +
-          (toDate.getMonth() - periodStart.getMonth()) + 1
-        )
-        const clampedMonths = Math.min(periodMonths, monthsInPeriod)
+        const monthlyDep  = (Number(a.purchase_cost) - Number(a.residual_value)) / a.useful_life_months
+        const assetMonth  = a.purchase_date.slice(0, 7)
+        const skippedForAsset = depSkipRecords
+          .filter(r => r.asset_id === a.asset_id)
+          .map(r => r.year_month)
+        const applicableMonths = allPeriodMonths.filter(m => m >= assetMonth && !skippedForAsset.includes(m))
+        const effectiveMonths  = applicableMonths.length
         return {
-          description: a.description,
-          monthly: Math.round(monthlyDep * 100) / 100,
-          total: Math.round(monthlyDep * clampedMonths * 100) / 100,
+          asset_id:      a.asset_id,
+          description:   a.description,
+          monthly:       Math.round(monthlyDep * 100) / 100,
+          total:         Math.round(monthlyDep * effectiveMonths * 100) / 100,
+          effectiveMonths,
+          loan_id:       a.loan_id,
         }
       })
     const totalDepreciation = depreciationByAsset.reduce((s, a) => s + a.total, 0)
+
+    // Member loan repayments in period:
+    //   = activated depreciation for linked assets within the period
+    //   + standalone cash payments within the period
+    const filteredLoanPayments = memberLoanPayments.filter(p =>
+      p.payment_date >= range.from && p.payment_date <= range.to
+    )
+
+    const memberLoanPaymentsInPeriod = memberLoans
+      .map(loan => {
+        // Asset depreciation contributions in this period for this loan
+        const assetDep = depreciationByAsset
+          .filter(a => a.loan_id === loan.loan_id)
+          .reduce((s, a) => s + a.total, 0)
+        // Standalone cash payments in this period
+        const standalone = filteredLoanPayments
+          .filter(p => p.loan_id === loan.loan_id)
+          .reduce((s, p) => s + Number(p.amount), 0)
+        return {
+          loanId:     loan.loan_id,
+          memberName: loan.member_name,
+          assetDep,
+          standalone,
+          total: assetDep + standalone,
+        }
+      })
+      .filter(l => l.total > 0)
+
+    const totalMemberLoanPayments = memberLoanPaymentsInPeriod.reduce((s, l) => s + l.total, 0)
 
     // Expense categories (excluding ones handled separately above)
     const OVERHEAD_CATS = [
@@ -771,8 +848,12 @@ export default function BusinessDashboard() {
       overheads, totalOverheads, totalExpenses,
       profitLoss,
       monthsInPeriod,
+      allPeriodMonths,
+      depSkipRecords,
+      totalMemberLoanPayments,
+      memberLoanPaymentsInPeriod,
     }
-  }, [filteredSheets, filteredExpenses, filteredCounts, filteredFoodCounts, filteredPayslips, assets, range])
+  }, [filteredSheets, filteredExpenses, filteredCounts, filteredFoodCounts, filteredPayslips, assets, range, depSkipRecords, memberLoanPayments, memberLoans])
 
   const vatData = useMemo(() => [
     { name: 'Output VAT (Sales)',    value: Math.round(core.outputVat), color: BRAND.caramel },
@@ -1724,6 +1805,11 @@ export default function BusinessDashboard() {
             range={range}
             supabase={supabase}
             onAssetsChanged={fetchAll}
+            depSkipRecords={depSkipRecords}
+            onDepSkipToggle={handleDepSkipToggle}
+            memberLoans={memberLoans}
+            memberLoanPayments={memberLoanPayments}
+            onMemberLoansChanged={fetchAll}
           />
         </TabsContent>
 
@@ -1740,15 +1826,20 @@ interface ISData {
   foodOpStock: number; foodPurchases: number; foodClStock: number
   transportFees: number; courierFees: number; grossProfit: number; wages: number; casualWages: number
   grossAfterWages: number; uifPaye: number
-  depreciationByAsset: { description: string; monthly: number; total: number }[]
+  depreciationByAsset: { asset_id: number; description: string; monthly: number; total: number; effectiveMonths: number; loan_id: number | null }[]
   totalDepreciation: number
   overheads: { label: string; value: number }[]
   totalOverheads: number; totalExpenses: number; profitLoss: number
   monthsInPeriod: number
+  allPeriodMonths: string[]
+  depSkipRecords: { asset_id: number; year_month: string }[]
+  totalMemberLoanPayments: number
+  memberLoanPaymentsInPeriod: { loanId: number; memberName: string; assetDep: number; standalone: number; total: number }[]
 }
 
 function PLTab({
-  is, assets, range, supabase, onAssetsChanged,
+  is, assets, range, supabase, onAssetsChanged, depSkipRecords, onDepSkipToggle,
+  memberLoans, memberLoanPayments, onMemberLoansChanged,
 }: {
   is: ISData
   assets: DepreciationAsset[]
@@ -1756,6 +1847,11 @@ function PLTab({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any
   onAssetsChanged: () => void
+  depSkipRecords: { asset_id: number; year_month: string }[]
+  onDepSkipToggle: (assetId: number, month: string, skip: boolean) => Promise<void>
+  memberLoans: MemberLoan[]
+  memberLoanPayments: MemberLoanPayment[]
+  onMemberLoansChanged: () => void
 }) {
   const ZAR_pl = (n: number) =>
     new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(n)
@@ -1953,6 +2049,7 @@ function PLTab({
   const EMPTY_ASSET = {
     description: '', purchase_date: '', purchase_cost: 0,
     residual_value: 0, useful_life_months: 60, is_active: true, notes: '',
+    loan_id: null as number | null,
   }
   const [showAssetForm, setShowAssetForm] = useState(false)
   const [editAsset,     setEditAsset]     = useState<DepreciationAsset | null>(null)
@@ -1966,7 +2063,7 @@ function PLTab({
       description: a.description, purchase_date: a.purchase_date,
       purchase_cost: a.purchase_cost, residual_value: a.residual_value,
       useful_life_months: a.useful_life_months, is_active: a.is_active,
-      notes: a.notes ?? '',
+      notes: a.notes ?? '', loan_id: a.loan_id ?? null,
     })
     setEditAsset(a); setShowAssetForm(true)
   }
@@ -1982,6 +2079,7 @@ function PLTab({
       useful_life_months: assetForm.useful_life_months,
       is_active: assetForm.is_active,
       notes: assetForm.notes.trim() || null,
+      loan_id: assetForm.loan_id,
       updated_at: new Date().toISOString(),
     }
     if (editAsset) {
@@ -1995,6 +2093,75 @@ function PLTab({
   async function deleteAsset(id: number) {
     await supabase.from('vb_depreciation_asset').delete().eq('asset_id', id)
     setDeleteTarget(null); onAssetsChanged()
+  }
+
+  // ── Member loan state ─────────────────────────────────────────────────────
+  const EMPTY_LOAN = { member_name: '', description: '', loan_amount: 0, loan_date: '', notes: '' }
+  const [showLoanForm,  setShowLoanForm]  = useState(false)
+  const [editLoan,      setEditLoan]      = useState<MemberLoan | null>(null)
+  const [loanForm,      setLoanForm]      = useState({ ...EMPTY_LOAN })
+  const [loanSaving,    setLoanSaving]    = useState(false)
+  const [loanDeleteTarget, setLoanDeleteTarget] = useState<MemberLoan | null>(null)
+
+  const EMPTY_PAYMENT = { payment_date: '', amount: 0, notes: '' }
+  const [showPaymentForm, setShowPaymentForm] = useState(false)
+  const [paymentLoanId,   setPaymentLoanId]   = useState<number | null>(null)
+  const [paymentForm,     setPaymentForm]     = useState({ ...EMPTY_PAYMENT })
+  const [paymentSaving,   setPaymentSaving]   = useState(false)
+  const [paymentDeleteTarget, setPaymentDeleteTarget] = useState<MemberLoanPayment | null>(null)
+
+  function openAddLoan() { setLoanForm({ ...EMPTY_LOAN }); setEditLoan(null); setShowLoanForm(true) }
+  function openEditLoan(l: MemberLoan) {
+    setLoanForm({
+      member_name: l.member_name, description: l.description ?? '',
+      loan_amount: l.loan_amount, loan_date: l.loan_date, notes: l.notes ?? '',
+    })
+    setEditLoan(l); setShowLoanForm(true)
+  }
+  function openAddPayment(loanId: number) {
+    setPaymentForm({ ...EMPTY_PAYMENT })
+    setPaymentLoanId(loanId)
+    setShowPaymentForm(true)
+  }
+
+  async function saveLoan() {
+    if (!loanForm.member_name || !loanForm.loan_date || !loanForm.loan_amount) return
+    setLoanSaving(true)
+    const payload = {
+      member_name: loanForm.member_name.trim(),
+      description: loanForm.description.trim() || null,
+      loan_amount: loanForm.loan_amount,
+      loan_date: loanForm.loan_date,
+      notes: loanForm.notes.trim() || null,
+    }
+    if (editLoan) {
+      await supabase.from('vb_member_loan').update(payload).eq('loan_id', editLoan.loan_id)
+    } else {
+      await supabase.from('vb_member_loan').insert([payload])
+    }
+    setLoanSaving(false); setShowLoanForm(false); onMemberLoansChanged()
+  }
+
+  async function deleteLoan(id: number) {
+    await supabase.from('vb_member_loan').delete().eq('loan_id', id)
+    setLoanDeleteTarget(null); onMemberLoansChanged()
+  }
+
+  async function savePayment() {
+    if (!paymentForm.payment_date || !paymentForm.amount || !paymentLoanId) return
+    setPaymentSaving(true)
+    await supabase.from('vb_member_loan_payment').insert([{
+      loan_id: paymentLoanId,
+      payment_date: paymentForm.payment_date,
+      amount: paymentForm.amount,
+      notes: paymentForm.notes.trim() || null,
+    }])
+    setPaymentSaving(false); setShowPaymentForm(false); onMemberLoansChanged()
+  }
+
+  async function deletePayment(id: number) {
+    await supabase.from('vb_member_loan_payment').delete().eq('payment_id', id)
+    onMemberLoansChanged()
   }
 
   // ── P&L row renderer ──────────────────────────────────────────────────────
@@ -2044,7 +2211,7 @@ function PLTab({
       { type: 'header' as const, label: 'DEPRECIATION' },
       ...is.depreciationByAsset.map(a => ({
         type: 'row' as const,
-        label: `${a.description} (R${a.monthly.toFixed(0)}/mo × ${is.monthsInPeriod})`,
+        label: `${a.description} (R${a.monthly.toFixed(0)}/mo × ${a.effectiveMonths} active months)`,
         value: a.total, indent: true, sub: true,
       })),
       { type: 'spacer' as const },
@@ -2052,6 +2219,27 @@ function PLTab({
     { type: 'subtotal', label: 'TOTAL EXPENSES', value: is.totalExpenses },
     { type: 'spacer' },
     { type: 'total', label: 'NET PROFIT / (LOSS)', value: is.profitLoss, positive: is.profitLoss >= 0 },
+    ...(is.totalMemberLoanPayments > 0 ? [
+      { type: 'spacer' as const },
+      { type: 'header' as const, label: 'MEMBER LOAN REPAYMENTS' },
+      ...is.memberLoanPaymentsInPeriod.flatMap(l => [
+        ...(l.assetDep > 0 ? [{
+          type: 'row' as const,
+          label: `${l.memberName} — Asset depreciation`,
+          value: l.assetDep,
+          indent: true,
+          sub: true,
+        }] : []),
+        ...(l.standalone > 0 ? [{
+          type: 'row' as const,
+          label: `${l.memberName} — Cash payment`,
+          value: l.standalone,
+          indent: true,
+          sub: true,
+        }] : []),
+      ]),
+      { type: 'total' as const, label: 'NET AFTER MEMBER LOANS', value: is.profitLoss - is.totalMemberLoanPayments, positive: (is.profitLoss - is.totalMemberLoanPayments) >= 0 },
+    ] : []),
   ]
 
   return (
@@ -2237,6 +2425,378 @@ function PLTab({
         )}
       </div>
 
+      {/* Depreciation Month Schedule — per asset */}
+      {assets.filter(a => a.is_active).length > 0 && is.allPeriodMonths.length > 0 && (
+        <div className="rounded-2xl border bg-card overflow-hidden">
+          <div className="px-5 py-4 border-b bg-muted/30">
+            <h3 className="font-semibold text-sm">Depreciation Schedule</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Toggle each asset per month — skipped months are excluded from the income statement and do not count as loan repayment.
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b bg-muted/20 text-[10px] uppercase tracking-widest text-muted-foreground">
+                  <th className="px-4 py-2 text-left sticky left-0 bg-muted/20 min-w-[160px]">Asset</th>
+                  <th className="px-4 py-2 text-right">R/mo</th>
+                  {is.allPeriodMonths.map(m => {
+                    const [y, mo] = m.split('-')
+                    return (
+                      <th key={m} className="px-3 py-2 text-center min-w-[80px]">
+                        {new Date(Number(y), Number(mo)-1, 1).toLocaleString('en-ZA', { month: 'short' })}<br/>
+                        <span className="font-normal">{y}</span>
+                      </th>
+                    )
+                  })}
+                  <th className="px-4 py-2 text-right">Period total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {assets.filter(a => a.is_active && new Date(a.purchase_date) <= new Date(range.to)).map(a => {
+                  const monthlyDep = (Number(a.purchase_cost) - Number(a.residual_value)) / a.useful_life_months
+                  const assetStartMonth = a.purchase_date.slice(0, 7)
+                  const linkedLoan = memberLoans.find(l => l.loan_id === a.loan_id)
+                  const assetDepRow = is.depreciationByAsset.find(d => d.asset_id === a.asset_id)
+                  return (
+                    <tr key={a.asset_id} className="border-b hover:bg-muted/10">
+                      <td className="px-4 py-2.5 sticky left-0 bg-card">
+                        <p className="font-medium text-xs">{a.description}</p>
+                        {linkedLoan && (
+                          <p className="text-[10px] text-muted-foreground mt-0.5">
+                            Loan: {linkedLoan.member_name}
+                          </p>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5 text-right tabular-nums text-xs text-muted-foreground">
+                        {ZAR_pl(monthlyDep)}
+                      </td>
+                      {is.allPeriodMonths.map(month => {
+                        const isBeforeAsset = month < assetStartMonth
+                        if (isBeforeAsset) {
+                          return <td key={month} className="px-3 py-2.5 text-center text-muted-foreground/30 text-xs">—</td>
+                        }
+                        const isSkipped = is.depSkipRecords.some(r => r.asset_id === a.asset_id && r.year_month === month)
+                        return (
+                          <td key={month} className="px-3 py-2.5 text-center">
+                            <button
+                              onClick={() => void onDepSkipToggle(a.asset_id, month, !isSkipped)}
+                              title={isSkipped ? 'Click to include' : 'Click to skip'}
+                              className={`inline-flex items-center justify-center w-7 h-7 rounded-full text-xs font-bold transition-all ${
+                                isSkipped
+                                  ? 'bg-muted text-muted-foreground hover:bg-red-50 hover:text-red-500'
+                                  : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                              }`}
+                            >
+                              {isSkipped ? '✕' : '✓'}
+                            </button>
+                          </td>
+                        )
+                      })}
+                      <td className="px-4 py-2.5 text-right tabular-nums font-semibold text-xs">
+                        {ZAR_pl(assetDepRow?.total ?? 0)}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+              <tfoot>
+                <tr className="bg-muted/20 border-t-2">
+                  <td colSpan={2} className="px-4 py-2.5 text-xs font-semibold text-muted-foreground">Period depreciation total</td>
+                  {is.allPeriodMonths.map(m => <td key={m} />)}
+                  <td className="px-4 py-2.5 text-right font-bold tabular-nums text-sm">{ZAR_pl(is.totalDepreciation)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Member Loans */}
+      <div className="rounded-2xl border bg-card overflow-hidden">
+        <div className="px-5 py-4 border-b bg-muted/30 flex items-center justify-between gap-3">
+          <div>
+            <h3 className="font-semibold text-sm">Member Loans</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Track loans made by members to the business and record repayments.
+            </p>
+          </div>
+          <button
+            onClick={openAddLoan}
+            className="flex items-center gap-1.5 text-xs font-semibold bg-foreground text-background rounded-lg px-3 py-1.5 hover:opacity-90 transition-opacity"
+          >
+            <span className="text-base leading-none">+</span> Add loan
+          </button>
+        </div>
+
+        {memberLoans.length === 0 ? (
+          <div className="text-center py-10 text-muted-foreground text-sm">
+            No member loans yet. Add one above to start tracking.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b bg-muted/20 text-[10px] uppercase tracking-widest text-muted-foreground">
+                  <th className="px-4 py-2 text-left">Member</th>
+                  <th className="px-4 py-2 text-left">Description</th>
+                  <th className="px-4 py-2 text-right">Loan Amount</th>
+                  <th className="px-4 py-2 text-right">Total Paid</th>
+                  <th className="px-4 py-2 text-right">Balance</th>
+                  <th className="px-4 py-2 text-right">In Period</th>
+                  <th className="px-4 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                {memberLoans.map(l => {
+                  // All-time activated depreciation for assets linked to this loan
+                  const allTimeAssetDep = assets
+                    .filter(a => a.is_active && a.loan_id === l.loan_id)
+                    .reduce((assetSum, a) => {
+                      const monthlyDep = (Number(a.purchase_cost) - Number(a.residual_value)) / a.useful_life_months
+                      const assetStart = a.purchase_date.slice(0, 7)
+                      const today = new Date().toISOString().slice(0, 7)
+                      const allMonths = getMonthsInRange(a.purchase_date, new Date().toISOString().split('T')[0])
+                      const skipped = depSkipRecords.filter(r => r.asset_id === a.asset_id).map(r => r.year_month)
+                      const activated = allMonths.filter(m => m >= assetStart && m <= today && !skipped.includes(m))
+                      return assetSum + Math.round(monthlyDep * activated.length * 100) / 100
+                    }, 0)
+                  const totalStandalone = memberLoanPayments
+                    .filter(p => p.loan_id === l.loan_id)
+                    .reduce((s, p) => s + Number(p.amount), 0)
+                  const totalPaid = allTimeAssetDep + totalStandalone
+                  const balance = Number(l.loan_amount) - totalPaid
+                  const inPeriod = memberLoanPayments
+                    .filter(p => p.loan_id === l.loan_id && p.payment_date >= range.from && p.payment_date <= range.to)
+                    .reduce((s, p) => s + Number(p.amount), 0)
+                  return (
+                    <tr key={l.loan_id} className="border-b hover:bg-muted/10">
+                      <td className="px-4 py-2.5 font-medium">{l.member_name}</td>
+                      <td className="px-4 py-2.5 text-muted-foreground text-xs">{l.description ?? '—'}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums">{ZAR_pl(Number(l.loan_amount))}</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground" title={`Dep: ${ZAR_pl(allTimeAssetDep)} + Cash: ${ZAR_pl(totalStandalone)}`}>
+                        {ZAR_pl(totalPaid)}
+                        {allTimeAssetDep > 0 && (
+                          <p className="text-[10px] text-muted-foreground/70">Dep: {ZAR_pl(allTimeAssetDep)} + Cash: {ZAR_pl(totalStandalone)}</p>
+                        )}
+                      </td>
+                      <td className={`px-4 py-2.5 text-right tabular-nums font-semibold ${balance > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                        {ZAR_pl(balance)}
+                      </td>
+                      <td className="px-4 py-2.5 text-right tabular-nums text-muted-foreground">
+                        {inPeriod > 0 ? ZAR_pl(inPeriod) : '—'}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center gap-1 justify-end">
+                          <button onClick={() => openEditLoan(l)} className="text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded hover:bg-muted transition-colors">Edit</button>
+                          <button onClick={() => openAddPayment(l.loan_id)} className="text-xs text-blue-600 hover:text-blue-800 px-2 py-1 rounded hover:bg-blue-50 transition-colors">Pay</button>
+                          <button onClick={() => setLoanDeleteTarget(l)} className="text-xs text-red-500 hover:text-red-700 px-2 py-1 rounded hover:bg-red-50 transition-colors">Del</button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+              <tfoot>
+                <tr className="bg-muted/20 border-t-2">
+                  <td colSpan={2} className="px-4 py-2.5 text-xs font-semibold text-muted-foreground">Totals</td>
+                  <td className="px-4 py-2.5 text-right tabular-nums font-semibold">
+                    {ZAR_pl(memberLoans.reduce((s, l) => s + Number(l.loan_amount), 0))}
+                  </td>
+                  <td className="px-4 py-2.5 text-right tabular-nums font-semibold text-muted-foreground">
+                    {ZAR_pl(memberLoans.reduce((s, l) => {
+                      const allTimeAssetDepTotal = assets
+                        .filter(a => a.is_active && a.loan_id === l.loan_id)
+                        .reduce((assetSum, a) => {
+                          const monthlyDep = (Number(a.purchase_cost) - Number(a.residual_value)) / a.useful_life_months
+                          const assetStart = a.purchase_date.slice(0, 7)
+                          const today = new Date().toISOString().slice(0, 7)
+                          const allMonths = getMonthsInRange(a.purchase_date, new Date().toISOString().split('T')[0])
+                          const skipped = depSkipRecords.filter(r => r.asset_id === a.asset_id).map(r => r.year_month)
+                          const activated = allMonths.filter(m => m >= assetStart && m <= today && !skipped.includes(m))
+                          return assetSum + Math.round(monthlyDep * activated.length * 100) / 100
+                        }, 0)
+                      const cashPaid = memberLoanPayments.filter(p => p.loan_id === l.loan_id).reduce((sp, p) => sp + Number(p.amount), 0)
+                      return s + allTimeAssetDepTotal + cashPaid
+                    }, 0))}
+                  </td>
+                  <td className="px-4 py-2.5 text-right tabular-nums font-semibold">
+                    {ZAR_pl(memberLoans.reduce((s, l) => {
+                      const allTimeAssetDepTotal = assets
+                        .filter(a => a.is_active && a.loan_id === l.loan_id)
+                        .reduce((assetSum, a) => {
+                          const monthlyDep = (Number(a.purchase_cost) - Number(a.residual_value)) / a.useful_life_months
+                          const assetStart = a.purchase_date.slice(0, 7)
+                          const today = new Date().toISOString().slice(0, 7)
+                          const allMonths = getMonthsInRange(a.purchase_date, new Date().toISOString().split('T')[0])
+                          const skipped = depSkipRecords.filter(r => r.asset_id === a.asset_id).map(r => r.year_month)
+                          const activated = allMonths.filter(m => m >= assetStart && m <= today && !skipped.includes(m))
+                          return assetSum + Math.round(monthlyDep * activated.length * 100) / 100
+                        }, 0)
+                      const cashPaid = memberLoanPayments.filter(p => p.loan_id === l.loan_id).reduce((sp, p) => sp + Number(p.amount), 0)
+                      return s + Number(l.loan_amount) - allTimeAssetDepTotal - cashPaid
+                    }, 0))}
+                  </td>
+                  <td className="px-4 py-2.5 text-right tabular-nums font-semibold text-muted-foreground">
+                    {ZAR_pl(memberLoanPayments.filter(p => p.payment_date >= range.from && p.payment_date <= range.to).reduce((s, p) => s + Number(p.amount), 0))}
+                  </td>
+                  <td />
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Loan add/edit modal */}
+      {showLoanForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-card rounded-2xl border shadow-xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-sm">{editLoan ? 'Edit loan' : 'Add member loan'}</h3>
+              <button onClick={() => setShowLoanForm(false)} className="text-muted-foreground hover:text-foreground">
+                <span className="text-lg leading-none">×</span>
+              </button>
+            </div>
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Member name *</label>
+                <input
+                  className="w-full border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                  placeholder="e.g. Andre van Dyk"
+                  value={loanForm.member_name}
+                  onChange={e => setLoanForm(f => ({ ...f, member_name: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Description</label>
+                <input
+                  className="w-full border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                  placeholder="e.g. Capital injection for equipment"
+                  value={loanForm.description}
+                  onChange={e => setLoanForm(f => ({ ...f, description: e.target.value }))}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Loan amount (R) *</label>
+                  <input type="number" min={0} step={0.01}
+                    className="w-full border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                    value={loanForm.loan_amount || ''}
+                    onChange={e => setLoanForm(f => ({ ...f, loan_amount: parseFloat(e.target.value) || 0 }))}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Loan date *</label>
+                  <input type="date"
+                    className="w-full border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                    value={loanForm.loan_date}
+                    onChange={e => setLoanForm(f => ({ ...f, loan_date: e.target.value }))}
+                  />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Notes (optional)</label>
+                <textarea
+                  className="w-full border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+                  rows={2}
+                  value={loanForm.notes}
+                  onChange={e => setLoanForm(f => ({ ...f, notes: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button onClick={() => setShowLoanForm(false)}
+                className="flex-1 border rounded-lg py-2 text-sm font-medium hover:bg-muted transition-colors">
+                Cancel
+              </button>
+              <button
+                onClick={saveLoan}
+                disabled={loanSaving || !loanForm.member_name || !loanForm.loan_date || !loanForm.loan_amount}
+                className="flex-1 bg-foreground text-background rounded-lg py-2 text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+              >
+                {loanSaving ? 'Saving…' : editLoan ? 'Save changes' : 'Add loan'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Loan delete confirm */}
+      {loanDeleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-card rounded-2xl border shadow-xl w-full max-w-sm p-6 space-y-4">
+            <h3 className="font-semibold text-sm">Delete loan?</h3>
+            <p className="text-sm text-muted-foreground">
+              Loan from <strong>{loanDeleteTarget.member_name}</strong> will be permanently removed along with all payments. This cannot be undone.
+            </p>
+            <div className="flex gap-2">
+              <button onClick={() => setLoanDeleteTarget(null)} className="flex-1 border rounded-lg py-2 text-sm font-medium hover:bg-muted transition-colors">Cancel</button>
+              <button onClick={() => deleteLoan(loanDeleteTarget.loan_id)}
+                className="flex-1 bg-red-600 text-white rounded-lg py-2 text-sm font-medium hover:bg-red-700 transition-colors">
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Payment add modal */}
+      {showPaymentForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-card rounded-2xl border shadow-xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-sm">Record loan repayment</h3>
+              <button onClick={() => setShowPaymentForm(false)} className="text-muted-foreground hover:text-foreground">
+                <span className="text-lg leading-none">×</span>
+              </button>
+            </div>
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Payment date *</label>
+                  <input type="date"
+                    className="w-full border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                    value={paymentForm.payment_date}
+                    onChange={e => setPaymentForm(f => ({ ...f, payment_date: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-muted-foreground">Amount paid (R) *</label>
+                  <input type="number" min={0} step={0.01}
+                    className="w-full border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                    value={paymentForm.amount || ''}
+                    onChange={e => setPaymentForm(f => ({ ...f, amount: parseFloat(e.target.value) || 0 }))}
+                  />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Notes (optional)</label>
+                <input
+                  className="w-full border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                  placeholder="e.g. Bank transfer ref 12345"
+                  value={paymentForm.notes}
+                  onChange={e => setPaymentForm(f => ({ ...f, notes: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button onClick={() => setShowPaymentForm(false)}
+                className="flex-1 border rounded-lg py-2 text-sm font-medium hover:bg-muted transition-colors">
+                Cancel
+              </button>
+              <button
+                onClick={savePayment}
+                disabled={paymentSaving || !paymentForm.payment_date || !paymentForm.amount}
+                className="flex-1 bg-foreground text-background rounded-lg py-2 text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+              >
+                {paymentSaving ? 'Saving…' : 'Record payment'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Asset add/edit modal */}
       {showAssetForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -2256,6 +2816,19 @@ function PLTab({
                   value={assetForm.description}
                   onChange={e => setAssetForm(f => ({ ...f, description: e.target.value }))}
                 />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Funded by member loan (optional)</label>
+                <select
+                  className="w-full border rounded-lg px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-ring"
+                  value={assetForm.loan_id ?? ''}
+                  onChange={e => setAssetForm(f => ({ ...f, loan_id: e.target.value ? Number(e.target.value) : null }))}
+                >
+                  <option value="">— None —</option>
+                  {memberLoans.map(l => (
+                    <option key={l.loan_id} value={l.loan_id}>{l.member_name}{l.description ? ` — ${l.description}` : ''}</option>
+                  ))}
+                </select>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
