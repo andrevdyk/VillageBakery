@@ -583,36 +583,60 @@ interface LineItem {
 
 const EMPTY_LINE_ITEM: LineItem = { description: '', category: '', amount_excl_vat: 0, vat_rated: false }
 
-function AddExpenseModal({ open, onClose, suppliers, onSave }: {
+function AddExpenseModal({ open, onClose, suppliers, onSave, initial, onUpdate, onReplaceWithLines }: {
   open: boolean; onClose: () => void; suppliers: Supplier[]
   onSave: (rows: ExpenseRow[]) => Promise<void>
+  initial?: Expense | null
+  onUpdate?: (id: number, data: Partial<ExpenseRow>) => Promise<void>
+  onReplaceWithLines?: (id: number, rows: ExpenseRow[]) => Promise<void>
 }) {
-  const [type, setType]         = useState<'expense' | 'bank'>('expense')
+  const isEdit = !!initial
+
+  // Lazy initialisers — read from `initial` immediately on mount so state is
+  // correct before the first paint (no async useEffect gap).
+  const [type, setType]         = useState<'expense' | 'bank'>(() =>
+    initial?.category === 'BANK ACC - B/C' ? 'bank' : 'expense'
+  )
   const [invoiceMode, setInvoiceMode] = useState<'single' | 'items'>('single')
 
   // Shared header fields
-  const [supplierId, setSupplierId]   = useState<number | null>(null)
-  const [invoiceNumber, setInvoiceNumber] = useState('')
-  const [invoiceDate, setInvoiceDate] = useState('')
-  const [datePaid, setDatePaid]       = useState('')
+  const [supplierId, setSupplierId]   = useState<number | null>(() => initial?.supplier_id ?? null)
+  const [invoiceNumber, setInvoiceNumber] = useState(() => initial?.invoice_number ?? '')
+  const [invoiceDate, setInvoiceDate] = useState(() => initial?.invoice_date ?? '')
+  const [datePaid, setDatePaid]       = useState(() => initial?.date_paid ?? '')
 
   // Single mode fields
-  const [description, setDescription] = useState('')
-  const [category, setCategory]       = useState('')
-  const [amountExcl, setAmountExcl]   = useState(0)
-  const [vatRated, setVatRated]       = useState(false)
+  const [description, setDescription] = useState(() => initial?.product_description ?? '')
+  const [category, setCategory]       = useState(() => initial?.category ?? '')
+  const [amountExcl, setAmountExcl]   = useState(() => Number(initial?.amount_excl_vat ?? 0))
+  const [vatRated, setVatRated]       = useState(() => initial?.vat_rated ?? false)
 
-  // Line items mode
-  const [lineItems, setLineItems] = useState<LineItem[]>([{ ...EMPTY_LINE_ITEM }])
+  // Line items mode — pre-seed with the existing row so user can split from it
+  const [lineItems, setLineItems] = useState<LineItem[]>(() =>
+    initial ? [{
+      description: initial.product_description ?? '',
+      category:    initial.category ?? '',
+      amount_excl_vat: Number(initial.amount_excl_vat),
+      vat_rated:   initial.vat_rated,
+    }] : [{ ...EMPTY_LINE_ITEM }]
+  )
 
   // Bank fees mode
-  const [bankFees, setBankFees] = useState({ amount: 0, description: 'Bank charges', date: new Date().toISOString().split('T')[0], date_paid: '' })
+  const [bankFees, setBankFees] = useState(() => initial ? {
+    amount:      Number(initial.amount_excl_vat),
+    description: initial.product_description ?? 'Bank charges',
+    date:        initial.invoice_date,
+    date_paid:   initial.date_paid ?? '',
+  } : { amount: 0, description: 'Bank charges', date: new Date().toISOString().split('T')[0], date_paid: '' })
 
   const [saving, setSaving] = useState(false)
   const [error, setError]   = useState('')
 
+  // For the ADD modal (no `initial`): reset fields every time the dialog opens.
+  // For the EDIT modal the `key` prop forces a fresh mount, so lazy initialisers
+  // above already have the correct values — no effect needed.
   useEffect(() => {
-    if (open) {
+    if (open && !initial) {
       setType('expense'); setInvoiceMode('single')
       setSupplierId(null); setInvoiceNumber(''); setInvoiceDate(''); setDatePaid('')
       setDescription(''); setCategory(''); setAmountExcl(0); setVatRated(false)
@@ -620,7 +644,8 @@ function AddExpenseModal({ open, onClose, suppliers, onSave }: {
       setBankFees({ amount: 0, description: 'Bank charges', date: new Date().toISOString().split('T')[0], date_paid: '' })
       setError('')
     }
-  }, [open])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initial])
 
   const singleVat = calcVat(amountExcl, vatRated)
 
@@ -637,6 +662,59 @@ function AddExpenseModal({ open, onClose, suppliers, onSave }: {
   function removeLine(idx: number) { setLineItems(prev => prev.filter((_, i) => i !== idx)) }
 
   async function handleSave() {
+    if (isEdit && onUpdate) {
+      // ── Edit mode ──────────────────────────────────────────────────────────
+      if (type === 'bank') {
+        if (!bankFees.amount || bankFees.amount <= 0) return setError('Please enter a bank fee amount')
+        if (!bankFees.date) return setError('Please enter a date')
+        setError(''); setSaving(true)
+        await onUpdate(initial!.expense_id, {
+          invoice_date: bankFees.date,
+          product_description: bankFees.description || 'Bank charges',
+          amount_excl_vat: bankFees.amount,
+          vat_rated: false,
+          date_paid: bankFees.date_paid || undefined,
+          category: 'BANK ACC - B/C',
+        })
+      } else if (invoiceMode === 'items' && onReplaceWithLines) {
+        // Split invoice into multiple categorised lines — delete original + insert new rows
+        if (!supplierId) return setError('Please select a supplier')
+        if (!invoiceDate) return setError('Please enter an invoice date')
+        const validLines = lineItems.filter(li => li.amount_excl_vat > 0)
+        if (validLines.length === 0) return setError('Add at least one line item with an amount')
+        setError(''); setSaving(true)
+        const rows: ExpenseRow[] = validLines.map(li => ({
+          supplier_id: supplierId!,
+          invoice_number: invoiceNumber || undefined,
+          invoice_date: invoiceDate,
+          product_description: li.description || undefined,
+          amount_excl_vat: li.amount_excl_vat,
+          vat_rated: li.vat_rated,
+          date_paid: datePaid || undefined,
+          category: li.category || null,
+        }))
+        await onReplaceWithLines(initial!.expense_id, rows)
+      } else {
+        if (!supplierId) return setError('Please select a supplier')
+        if (!invoiceDate) return setError('Please enter an invoice date')
+        if (!amountExcl || amountExcl <= 0) return setError('Please enter a valid amount')
+        setError(''); setSaving(true)
+        await onUpdate(initial!.expense_id, {
+          supplier_id: supplierId,
+          invoice_number: invoiceNumber || undefined,
+          invoice_date: invoiceDate,
+          product_description: description || undefined,
+          amount_excl_vat: amountExcl,
+          vat_rated: vatRated,
+          date_paid: datePaid || undefined,
+          category: category || null,
+        })
+      }
+      setSaving(false); onClose()
+      return
+    }
+
+    // ── Add mode ───────────────────────────────────────────────────────────────
     if (type === 'bank') {
       if (!bankFees.amount || bankFees.amount <= 0) return setError('Please enter a bank fee amount')
       if (!bankFees.date) return setError('Please enter a date')
@@ -691,24 +769,26 @@ function AddExpenseModal({ open, onClose, suppliers, onSave }: {
   return (
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent className="w-full max-w-lg h-[100dvh] sm:h-auto sm:max-h-[92vh] overflow-y-auto p-4 sm:p-6 rounded-none sm:rounded-xl">
-        <DialogHeader><DialogTitle>Add expense</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle>{isEdit ? 'Edit expense' : 'Add expense'}</DialogTitle></DialogHeader>
         <div className="space-y-4">
 
-          {/* Type toggle */}
-          <div className="flex rounded-xl bg-muted p-1 gap-1">
-            <button
-              onClick={() => setType('expense')}
-              className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-medium transition-all ${type === 'expense' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-            >
-              <FileText className="w-3.5 h-3.5" /> Supplier invoice
-            </button>
-            <button
-              onClick={() => setType('bank')}
-              className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-medium transition-all ${type === 'bank' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-            >
-              <Banknote className="w-3.5 h-3.5" /> Bank fees
-            </button>
-          </div>
+          {/* Type toggle — hidden when editing (type is locked) */}
+          {!isEdit && (
+            <div className="flex rounded-xl bg-muted p-1 gap-1">
+              <button
+                onClick={() => setType('expense')}
+                className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-medium transition-all ${type === 'expense' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                <FileText className="w-3.5 h-3.5" /> Supplier invoice
+              </button>
+              <button
+                onClick={() => setType('bank')}
+                className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-medium transition-all ${type === 'bank' ? 'bg-card shadow-sm text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+              >
+                <Banknote className="w-3.5 h-3.5" /> Bank fees
+              </button>
+            </div>
+          )}
 
           {type === 'bank' ? (
             <div className="space-y-4">
@@ -780,15 +860,25 @@ function AddExpenseModal({ open, onClose, suppliers, onSave }: {
                     <Package className="w-3.5 h-3.5" /> Line items
                   </button>
                 </div>
+                {isEdit && invoiceMode === 'items' && (
+                  <p className="text-xs text-amber-600 mt-1.5 flex items-center gap-1">
+                    <AlertCircle className="w-3 h-3 shrink-0" />
+                    The original row will be replaced with these line items.
+                  </p>
+                )}
               </div>
 
               {invoiceMode === 'single' ? (
                 <div className="space-y-4">
                   <div className="space-y-1.5">
                     <Label>Category</Label>
-                    <Select value={category} onValueChange={setCategory}>
+                    <Select
+                      value={category || '__none__'}
+                      onValueChange={v => setCategory(v === '__none__' ? '' : v)}
+                    >
                       <SelectTrigger><SelectValue placeholder="Select category…" /></SelectTrigger>
                       <SelectContent>
+                        <SelectItem value="__none__">— None —</SelectItem>
                         {EXPENSE_CATEGORIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
                       </SelectContent>
                     </Select>
@@ -869,7 +959,8 @@ function AddExpenseModal({ open, onClose, suppliers, onSave }: {
           <div className="flex justify-end gap-2 pt-1 sticky bottom-0 bg-background pb-2 sm:static sm:pb-0 sm:bg-transparent">
             <Button variant="outline" onClick={onClose} className="flex-1 sm:flex-none">Cancel</Button>
             <Button onClick={handleSave} disabled={saving} className="flex-1 sm:flex-none">
-              {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Save expense
+              {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              {isEdit ? 'Save changes' : 'Save expense'}
             </Button>
           </div>
         </div>
@@ -1612,7 +1703,12 @@ function FilterSheet({ open, onClose, suppliers, filterMonth, setFilterMonth, fi
 }
 
 // ─── Mobile Expense Card ───────────────────────────────────────────────────────
-function ExpenseCard({ expense, onMarkPaid }: { expense: Expense; onMarkPaid: (e: Expense) => void }) {
+function ExpenseCard({ expense, onMarkPaid, onEdit, onDelete }: {
+  expense: Expense
+  onMarkPaid: (e: Expense) => void
+  onEdit: (e: Expense) => void
+  onDelete: (e: Expense) => void
+}) {
   const isPaid = !!expense.date_paid
   return (
     <div className="rounded-xl border bg-card p-4 space-y-3">
@@ -1639,17 +1735,24 @@ function ExpenseCard({ expense, onMarkPaid }: { expense: Expense; onMarkPaid: (e
           <div>{ZAR(Number(expense.vat_amount))} VAT</div>
           {isPaid && expense.date_paid && <div className="text-green-600">Paid {new Date(expense.date_paid).toLocaleDateString('en-ZA')}</div>}
         </div>
-        <div className="text-right space-y-1.5">
-          <p className="text-sm font-semibold tabular-nums">{ZAR(Number(expense.amount_incl_vat))}</p>
+        <div className="flex items-center gap-1.5">
+          <p className="text-sm font-semibold tabular-nums mr-1">{ZAR(Number(expense.amount_incl_vat))}</p>
           {!isPaid && (
-            <Button
-              size="sm" variant="outline"
+            <Button size="sm" variant="outline"
               className="h-7 text-xs gap-1 border-green-300 text-green-700 hover:bg-green-50"
               onClick={() => onMarkPaid(expense)}
             >
               <Check className="w-3 h-3" /> Mark paid
             </Button>
           )}
+          <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-foreground"
+            onClick={() => onEdit(expense)}>
+            <Pencil className="w-3.5 h-3.5" />
+          </Button>
+          <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive"
+            onClick={() => onDelete(expense)}>
+            <Trash2 className="w-3.5 h-3.5" />
+          </Button>
         </div>
       </div>
     </div>
@@ -1899,7 +2002,10 @@ export default function ExpensesPage() {
 
   const [vendorModalOpen, setVendorModalOpen] = useState(false)
   const [editingVendor, setEditingVendor]     = useState<Supplier | null>(null)
-  const [markPaidExpense, setMarkPaidExpense] = useState<Expense | null>(null)
+  const [markPaidExpense, setMarkPaidExpense]       = useState<Expense | null>(null)
+  const [editingExpense, setEditingExpense]         = useState<Expense | null>(null)
+  const [deleteExpenseTarget, setDeleteExpenseTarget] = useState<Expense | null>(null)
+  const [deletingExpense, setDeletingExpense]       = useState(false)
 
   const now = new Date()
   const [filterMonth, setFilterMonth]               = useState<string>('all')
@@ -2010,6 +2116,43 @@ export default function ExpensesPage() {
     await supabase.from('vb_expense')
       .update({ date_paid: datePaid, ...(notes.trim() ? { notes } : {}) })
       .eq('expense_id', expenseId)
+    await refreshAll()
+  }
+
+  async function handleUpdateExpense(id: number, data: Partial<ExpenseRow>) {
+    // vat_amount and amount_incl_vat are generated columns — the DB recomputes
+    // them automatically when amount_excl_vat / vat_rated change.
+    const { error } = await supabase.from('vb_expense')
+      .update(data)
+      .eq('expense_id', id)
+    if (error) {
+      alert(`Failed to update expense: ${error.message}`)
+      return
+    }
+    await refreshAll()
+  }
+
+  async function handleReplaceExpense(id: number, rows: ExpenseRow[]) {
+    if (rows.length === 0) return
+    const [first, ...rest] = rows
+    // Update the original row with the first line (DB recomputes generated columns)
+    const { error: upErr } = await supabase.from('vb_expense')
+      .update(first)
+      .eq('expense_id', id)
+    if (upErr) { alert(`Failed to update expense: ${upErr.message}`); return }
+    // Insert any additional split lines as new rows (DB computes vat_amount etc.)
+    if (rest.length > 0) {
+      const { error: insErr } = await supabase.from('vb_expense').insert(rest)
+      if (insErr) { alert(`Failed to insert split lines: ${insErr.message}`); return }
+    }
+    await refreshAll()
+  }
+
+  async function handleDeleteExpense(id: number) {
+    setDeletingExpense(true)
+    await supabase.from('vb_expense').delete().eq('expense_id', id)
+    setDeletingExpense(false)
+    setDeleteExpenseTarget(null)
     await refreshAll()
   }
 
@@ -2141,15 +2284,16 @@ export default function ExpensesPage() {
                   <TableHead className="text-right">To pay</TableHead>
                   <TableHead>VAT?</TableHead>
                   <TableHead>Paid</TableHead>
+                  <TableHead className="w-20" />
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {loading ? (
-                  <TableRow><TableCell colSpan={11} className="text-center py-12 text-muted-foreground text-sm"><Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" />Loading…</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={12} className="text-center py-12 text-muted-foreground text-sm"><Loader2 className="w-5 h-5 animate-spin mx-auto mb-2" />Loading…</TableCell></TableRow>
                 ) : expenses.length === 0 ? (
-                  <TableRow><TableCell colSpan={11} className="text-center py-12 text-muted-foreground text-sm">No expenses found for the selected filters.</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={12} className="text-center py-12 text-muted-foreground text-sm">No expenses found for the selected filters.</TableCell></TableRow>
                 ) : expenses.map(e => (
-                  <TableRow key={e.expense_id}>
+                  <TableRow key={e.expense_id} className="group/row">
                     <TableCell className="text-sm tabular-nums whitespace-nowrap">{new Date(e.invoice_date).toLocaleDateString('en-ZA')}</TableCell>
                     <TableCell className="text-sm max-w-[160px] truncate">{e.vb_supplier?.company_name ?? '—'}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{e.invoice_number ?? '—'}</TableCell>
@@ -2184,6 +2328,26 @@ export default function ExpensesPage() {
                         </Button>
                       )}
                     </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-0.5 opacity-0 group-hover/row:opacity-100 transition-opacity">
+                        <Button
+                          size="icon" variant="ghost"
+                          className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                          title="Edit expense"
+                          onClick={() => setEditingExpense(e)}
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </Button>
+                        <Button
+                          size="icon" variant="ghost"
+                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                          title="Delete expense"
+                          onClick={() => setDeleteExpenseTarget(e)}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </Button>
+                      </div>
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -2195,7 +2359,15 @@ export default function ExpensesPage() {
               <div className="flex flex-col items-center gap-2 py-12 text-muted-foreground text-sm"><Loader2 className="w-5 h-5 animate-spin" />Loading…</div>
             ) : expenses.length === 0 ? (
               <div className="text-center py-12 text-muted-foreground text-sm">No expenses found for the selected filters.</div>
-            ) : expenses.map(e => <ExpenseCard key={e.expense_id} expense={e} onMarkPaid={setMarkPaidExpense} />)}
+            ) : expenses.map(e => (
+              <ExpenseCard
+                key={e.expense_id}
+                expense={e}
+                onMarkPaid={setMarkPaidExpense}
+                onEdit={setEditingExpense}
+                onDelete={setDeleteExpenseTarget}
+              />
+            ))}
           </div>
 
           {totalPages > 1 && (
@@ -2241,6 +2413,39 @@ export default function ExpensesPage() {
         expense={markPaidExpense}
         onSave={handleMarkPaid}
       />
+      <AddExpenseModal
+        key={editingExpense ? `edit-${editingExpense.expense_id}` : 'edit-none'}
+        open={!!editingExpense}
+        onClose={() => setEditingExpense(null)}
+        suppliers={suppliers}
+        onSave={insertMany}
+        initial={editingExpense}
+        onUpdate={handleUpdateExpense}
+        onReplaceWithLines={handleReplaceExpense}
+      />
+      <AlertDialog open={!!deleteExpenseTarget} onOpenChange={open => { if (!open) setDeleteExpenseTarget(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete expense?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the expense from{' '}
+              <strong>{deleteExpenseTarget?.vb_supplier?.company_name ?? 'this supplier'}</strong>
+              {deleteExpenseTarget?.invoice_date && <> dated {new Date(deleteExpenseTarget.invoice_date).toLocaleDateString('en-ZA')}</>}
+              {' '}({ZAR(Number(deleteExpenseTarget?.amount_incl_vat ?? 0))}). This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => deleteExpenseTarget && handleDeleteExpense(deleteExpenseTarget.expense_id)}
+              disabled={deletingExpense}
+            >
+              {deletingExpense ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Deleting…</> : 'Delete'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <FilterSheet
         open={showFilters} onClose={() => setShowFilters(false)} suppliers={suppliers}
         filterMonth={filterMonth}         setFilterMonth={setFilterMonth}
